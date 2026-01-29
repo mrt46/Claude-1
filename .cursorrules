@@ -1,0 +1,955 @@
+# 🎯 ADVANCED CURSOR RULES
+# Institutional-Grade Crypto Trading Bot
+
+## PROJECT CONTEXT
+
+You are building a **professional institutional-grade cryptocurrency trading bot** for Binance. This is NOT a simple retail bot - it uses advanced market microstructure analysis, volume profile, order book depth, and supply/demand zones for decision-making.
+
+**Technology Stack:**
+- Language: Python 3.11+
+- Exchange: Binance (python-binance, CCXT)
+- Database: TimescaleDB (time-series) + PostgreSQL (transactional)
+- Async: asyncio, aiohttp, websockets
+- Analysis: pandas, numpy, ta, pandas-ta
+- Monitoring: Telegram alerts, Prometheus metrics
+
+**Key Features:**
+- Volume Profile Analysis (POC, VAH, VAL, HVN, LVN)
+- Order Book Depth Analysis (imbalance, walls, liquidity)
+- Cumulative Volume Delta (CVD) with divergence detection
+- Supply & Demand Zones (fresh vs tested)
+- Market Microstructure (spread, slippage estimation)
+- Multi-factor scoring system (10 factors, 7/10 threshold)
+
+---
+
+## 🔥 CRITICAL RULES - NEVER VIOLATE
+
+### 1. NO PLACEHOLDERS OR TODOs IN PRODUCTION CODE
+
+```python
+# ❌ ABSOLUTELY FORBIDDEN:
+def calculate_volume_profile():
+    # TODO: Implement this
+    pass
+
+def calculate_cvd():
+    # Placeholder - will implement later
+    return 0
+
+# ✅ REQUIRED: Full implementation
+def calculate_volume_profile(
+    df: pd.DataFrame,
+    num_bins: int = 100
+) -> VolumeProfile:
+    """
+    Calculate volume profile with POC, VAH, VAL, HVN, LVN.
+    
+    Args:
+        df: OHLCV DataFrame
+        num_bins: Number of price bins
+        
+    Returns:
+        VolumeProfile object with all calculated values
+    """
+    # ... COMPLETE WORKING IMPLEMENTATION ...
+    return VolumeProfile(...)
+```
+
+### 2. TYPE HINTS ARE MANDATORY
+
+```python
+# ❌ FORBIDDEN:
+def calculate_position_size(balance, risk):
+    return balance * risk
+
+# ✅ REQUIRED:
+def calculate_position_size(
+    balance: float,
+    risk_percent: float,
+    entry_price: float,
+    stop_loss: float
+) -> float:
+    """Calculate position size using fixed fractional method."""
+    risk_amount = balance * risk_percent
+    risk_per_unit = abs(entry_price - stop_loss)
+    return risk_amount / risk_per_unit
+```
+
+### 3. COMPREHENSIVE DOCSTRINGS
+
+```python
+# ❌ INSUFFICIENT:
+def detect_walls(ob):
+    """Detect walls"""
+    pass
+
+# ✅ REQUIRED:
+def detect_walls(
+    ob: OrderBook,
+    threshold_multiplier: float = 3.0
+) -> WallDetection:
+    """
+    Detect abnormally large orders (walls) in order book.
+    
+    A 'wall' is an order that is significantly larger than average,
+    typically placed by whales. These can act as support (bid walls)
+    or resistance (ask walls).
+    
+    Args:
+        ob: OrderBook object with bids/asks
+        threshold_multiplier: Order is considered a wall if it's
+            this many times larger than average. Default 3.0.
+            
+    Returns:
+        WallDetection object containing:
+        - bid_walls: List of large bid orders
+        - ask_walls: List of large ask orders
+        - nearest_bid_wall: Closest support wall
+        - nearest_ask_wall: Closest resistance wall
+        
+    Example:
+        >>> ob = await exchange.get_order_book('BTCUSDT', limit=50)
+        >>> walls = detect_walls(ob, threshold_multiplier=3.0)
+        >>> if walls.nearest_bid_wall:
+        ...     print(f"Support at {walls.nearest_bid_wall.price}")
+    """
+    pass
+```
+
+### 4. ERROR HANDLING EVERYWHERE
+
+```python
+# ❌ DANGEROUS:
+def get_price(symbol: str) -> float:
+    ticker = client.get_symbol_ticker(symbol=symbol)
+    return float(ticker['price'])
+
+# ✅ REQUIRED:
+async def get_price(symbol: str) -> Optional[float]:
+    """
+    Fetch current price for symbol with error handling.
+    
+    Returns:
+        Current price or None if fetch fails
+    """
+    try:
+        ticker = await self.client.get_symbol_ticker(symbol=symbol)
+        return float(ticker['price'])
+    except BinanceAPIException as e:
+        if e.code == -1021:  # Timestamp error
+            logger.warning("Timestamp sync issue, retrying...")
+            await self._sync_server_time()
+            return await self.get_price(symbol)
+        else:
+            logger.error(f"Binance API error: {e}")
+            return None
+    except Exception as e:
+        logger.error(f"Unexpected error fetching price: {e}", exc_info=True)
+        return None
+```
+
+### 5. LOGGING AT KEY POINTS
+
+```python
+# ✅ REQUIRED: Strategic logging
+async def generate_signal(self, df: pd.DataFrame) -> Optional[Signal]:
+    """Generate trading signal using multi-factor analysis."""
+    
+    symbol = df['symbol'].iloc[0]
+    current_price = df['close'].iloc[-1]
+    
+    logger.info(f"Analyzing {symbol} at {current_price}")
+    
+    # Calculate factors
+    try:
+        vp = self.vp_analyzer.calculate_volume_profile(df)
+        logger.debug(f"  Volume profile: POC={vp.poc:.2f}, VAL={vp.val:.2f}, VAH={vp.vah:.2f}")
+    except Exception as e:
+        logger.error(f"Volume profile calculation failed: {e}")
+        return None
+    
+    # Scoring
+    buy_score = 0.0
+    if vp_position == 'below_val':
+        buy_score += 2.0
+        logger.info(f"  ✓ Price below VAL (+2.0)")
+    
+    # Decision
+    if buy_score >= 7.0:
+        logger.info(f"BUY SIGNAL generated: score={buy_score:.1f}/10")
+        return Signal(...)
+    else:
+        logger.info(f"No signal: score={buy_score:.1f}/10 (threshold: 7.0)")
+        return None
+```
+
+---
+
+## 📐 ARCHITECTURE PATTERNS
+
+### Pattern 1: Data Classes for Type Safety
+
+```python
+from dataclasses import dataclass
+from typing import List, Optional
+from datetime import datetime
+
+@dataclass
+class VolumeProfile:
+    """Volume profile calculation results."""
+    price_levels: np.ndarray
+    volumes: np.ndarray
+    poc: float  # Point of Control
+    vah: float  # Value Area High
+    val: float  # Value Area Low
+    hvn_levels: List[float]  # High Volume Nodes
+    lvn_levels: List[float]  # Low Volume Nodes
+    total_volume: float
+    period_hours: int
+
+@dataclass
+class Signal:
+    """Trading signal."""
+    strategy: str
+    symbol: str
+    side: str  # 'BUY' or 'SELL'
+    entry_price: float
+    stop_loss: float
+    take_profit: float
+    confidence: float  # 0.0 - 1.0
+    timestamp: datetime
+    metadata: dict
+```
+
+### Pattern 2: Abstract Base Classes
+
+```python
+from abc import ABC, abstractmethod
+
+class BaseStrategy(ABC):
+    """Abstract base class for all trading strategies."""
+    
+    def __init__(self, config: dict):
+        self.config = config
+        self.name = self.__class__.__name__
+        
+    @abstractmethod
+    async def generate_signal(self, df: pd.DataFrame) -> Optional[Signal]:
+        """
+        Generate trading signal from market data.
+        
+        Must be implemented by all strategy subclasses.
+        """
+        pass
+    
+    @abstractmethod
+    def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add technical indicators to dataframe.
+        
+        Must be implemented by all strategy subclasses.
+        """
+        pass
+```
+
+### Pattern 3: Context Managers for Resources
+
+```python
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def get_db_session():
+    """Database session context manager."""
+    session = SessionLocal()
+    try:
+        yield session
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
+
+# Usage:
+async with get_db_session() as session:
+    order = Order(...)
+    session.add(order)
+```
+
+---
+
+## 🎯 DOMAIN-SPECIFIC RULES
+
+### Volume Profile Analysis
+
+```python
+# ✅ CORRECT: Detailed volume profile implementation
+class VolumeProfileAnalyzer:
+    """
+    Professional volume profile analysis.
+    
+    Key Concepts:
+    - POC: Price level with highest trading volume
+    - VAH/VAL: Price range containing 70% of volume
+    - HVN: High volume nodes (strong support/resistance)
+    - LVN: Low volume nodes (price moves fast through these)
+    """
+    
+    def calculate_volume_profile(
+        self,
+        df: pd.DataFrame,
+        period_hours: int = 24,
+        num_bins: int = 100
+    ) -> VolumeProfile:
+        """
+        Calculate volume profile for given period.
+        
+        Algorithm:
+        1. Create price bins across min-max range
+        2. Distribute each candle's volume across bins it touched
+        3. Find POC (highest volume bin)
+        4. Calculate Value Area (70% volume)
+        5. Identify HVN (top 10% volume) and LVN (bottom 10%)
+        
+        Returns:
+            VolumeProfile with POC, VAH, VAL, HVN, LVN
+        """
+        # Filter to period
+        cutoff = df.index[-1] - timedelta(hours=period_hours)
+        df_period = df[df.index >= cutoff]
+        
+        # Create bins
+        price_min = df_period['low'].min()
+        price_max = df_period['high'].max()
+        bins = np.linspace(price_min, price_max, num_bins + 1)
+        
+        # Distribute volume
+        volume_dist = np.zeros(num_bins)
+        for _, row in df_period.iterrows():
+            low_idx = np.digitize(row['low'], bins) - 1
+            high_idx = np.digitize(row['high'], bins) - 1
+            bins_touched = high_idx - low_idx + 1
+            vol_per_bin = row['volume'] / bins_touched
+            for i in range(low_idx, high_idx + 1):
+                if 0 <= i < num_bins:
+                    volume_dist[i] += vol_per_bin
+        
+        # Calculate metrics
+        price_levels = (bins[:-1] + bins[1:]) / 2
+        poc_idx = np.argmax(volume_dist)
+        poc = price_levels[poc_idx]
+        
+        # Value Area (70% volume)
+        total_vol = volume_dist.sum()
+        target_vol = total_vol * 0.70
+        sorted_indices = np.argsort(volume_dist)[::-1]
+        
+        va_indices = []
+        cumulative = 0
+        for idx in sorted_indices:
+            cumulative += volume_dist[idx]
+            va_indices.append(idx)
+            if cumulative >= target_vol:
+                break
+        
+        vah = price_levels[max(va_indices)]
+        val = price_levels[min(va_indices)]
+        
+        # HVN and LVN
+        hvn_threshold = np.percentile(volume_dist, 90)
+        lvn_threshold = np.percentile(volume_dist, 10)
+        
+        hvn_levels = price_levels[volume_dist >= hvn_threshold].tolist()
+        lvn_levels = price_levels[volume_dist <= lvn_threshold].tolist()
+        
+        return VolumeProfile(
+            price_levels=price_levels,
+            volumes=volume_dist,
+            poc=poc,
+            vah=vah,
+            val=val,
+            hvn_levels=hvn_levels,
+            lvn_levels=lvn_levels,
+            total_volume=total_vol,
+            period_hours=period_hours
+        )
+```
+
+### Order Book Analysis
+
+```python
+# ✅ CORRECT: Order book imbalance with interpretation
+async def calculate_imbalance(
+    self,
+    ob: OrderBook,
+    depth_levels: int = 10
+) -> OrderBookImbalance:
+    """
+    Calculate bid/ask imbalance to gauge market pressure.
+    
+    Imbalance Interpretation:
+    - > 1.5: Strong buy pressure (more bids than asks)
+    - 1.2-1.5: Moderate buy pressure
+    - 0.67-0.83: Moderate sell pressure
+    - < 0.67: Strong sell pressure
+    
+    Args:
+        ob: OrderBook with real-time bids/asks
+        depth_levels: Number of levels to analyze (default 10)
+        
+    Returns:
+        OrderBookImbalance with ratios and interpretation
+    """
+    bids = ob.bids[:depth_levels]
+    asks = ob.asks[:depth_levels]
+    
+    # Volume imbalance
+    bid_vol = sum(qty for _, qty in bids)
+    ask_vol = sum(qty for _, qty in asks)
+    vol_imbalance = bid_vol / ask_vol if ask_vol > 0 else 0
+    
+    # Value imbalance
+    bid_value = sum(price * qty for price, qty in bids)
+    ask_value = sum(price * qty for price, qty in asks)
+    val_imbalance = bid_value / ask_value if ask_value > 0 else 0
+    
+    # Interpretation
+    if vol_imbalance > 1.5:
+        interpretation = 'strong_buy_pressure'
+    elif vol_imbalance > 1.2:
+        interpretation = 'moderate_buy_pressure'
+    elif vol_imbalance < 0.67:
+        interpretation = 'strong_sell_pressure'
+    elif vol_imbalance < 0.83:
+        interpretation = 'moderate_sell_pressure'
+    else:
+        interpretation = 'balanced'
+    
+    # Spread
+    best_bid = bids[0][0]
+    best_ask = asks[0][0]
+    spread_pct = (best_ask - best_bid) / best_bid * 100
+    
+    return OrderBookImbalance(
+        volume_imbalance=vol_imbalance,
+        value_imbalance=val_imbalance,
+        spread_percent=spread_pct,
+        bid_volume=bid_vol,
+        ask_volume=ask_vol,
+        interpretation=interpretation
+    )
+```
+
+### Multi-Factor Scoring
+
+```python
+# ✅ CORRECT: Transparent multi-factor decision system
+async def generate_signal(self, df: pd.DataFrame) -> Optional[Signal]:
+    """
+    Multi-factor signal generation with scoring system.
+    
+    Scoring factors (max 10 points):
+    1. Volume Profile Position [2 pts]
+    2. Order Book Imbalance [2 pts]
+    3. CVD Divergence [2 pts]
+    4. Supply/Demand Zones [2 pts]
+    5. HVN Support/Resistance [1 pt]
+    6. Time & Volume [1 pt]
+    
+    Minimum threshold: 7.0 / 10
+    """
+    symbol = df['symbol'].iloc[0]
+    current_price = df['close'].iloc[-1]
+    
+    # Initialize scores
+    buy_score = 0.0
+    sell_score = 0.0
+    max_score = 10.0
+    
+    # Factor 1: Volume Profile (2 pts)
+    vp = self.vp_analyzer.calculate_volume_profile(df)
+    vp_pos = self.vp_analyzer.get_position_in_profile(current_price, vp)
+    
+    if vp_pos == 'below_val':
+        buy_score += 2.0
+        logger.info("  ✓ Price below VAL (+2.0 buy)")
+    elif vp_pos == 'above_vah':
+        sell_score += 2.0
+        logger.info("  ✓ Price above VAH (+2.0 sell)")
+    
+    # Factor 2: Order Book (2 pts)
+    ob = await self.exchange.get_order_book(symbol, limit=100)
+    imbalance = self.ob_analyzer.calculate_imbalance(ob)
+    
+    if imbalance.interpretation == 'strong_buy_pressure':
+        buy_score += 2.0
+        logger.info(f"  ✓ Strong buy pressure ({imbalance.volume_imbalance:.2f}x) (+2.0 buy)")
+    elif imbalance.interpretation == 'moderate_buy_pressure':
+        buy_score += 1.0
+    elif imbalance.interpretation == 'strong_sell_pressure':
+        sell_score += 2.0
+    
+    # Factor 3: CVD (2 pts)
+    cvd_div = self.cvd_analyzer.calculate_divergence(df)
+    
+    if cvd_div == 'bullish_divergence':
+        buy_score += 2.0
+        logger.info("  ✓ Bullish CVD divergence (+2.0 buy)")
+    elif cvd_div == 'bearish_divergence':
+        sell_score += 2.0
+    
+    # ... (continue for all factors)
+    
+    logger.info(f"Final Scores: BUY={buy_score:.1f}/{max_score}, SELL={sell_score:.1f}/{max_score}")
+    
+    # Decision
+    if buy_score >= 7.0 and buy_score > sell_score:
+        return self._create_buy_signal(current_price, vp, ...)
+    elif sell_score >= 7.0 and sell_score > buy_score:
+        return self._create_sell_signal(current_price, vp, ...)
+    else:
+        logger.info("No signal: threshold not met")
+        return None
+```
+
+---
+
+## ⚡ PERFORMANCE RULES
+
+### 1. Cache Expensive Calculations
+
+```python
+# ✅ REQUIRED: Cache volume profile (recalculate every 5 min)
+class VolumeProfileAnalyzer:
+    def __init__(self):
+        self.cache = {}
+        self.cache_ttl = 300  # 5 minutes
+    
+    def calculate_volume_profile(self, df: pd.DataFrame) -> VolumeProfile:
+        cache_key = f"{df['symbol'].iloc[0]}_{len(df)}"
+        
+        if cache_key in self.cache:
+            cached_time, cached_vp = self.cache[cache_key]
+            if (datetime.now() - cached_time).seconds < self.cache_ttl:
+                logger.debug("Using cached volume profile")
+                return cached_vp
+        
+        # Calculate fresh
+        vp = self._calculate(df)
+        self.cache[cache_key] = (datetime.now(), vp)
+        return vp
+```
+
+### 2. Vectorized Operations (No Loops on DataFrames)
+
+```python
+# ❌ SLOW:
+for i in range(len(df)):
+    if df.loc[i, 'close'] > df.loc[i, 'sma']:
+        df.loc[i, 'signal'] = 1
+
+# ✅ FAST (100x faster):
+df['signal'] = np.where(df['close'] > df['sma'], 1, 0)
+```
+
+### 3. Async for I/O
+
+```python
+# ✅ REQUIRED: Concurrent API calls
+async def fetch_all_data(self, symbols: List[str]) -> Dict[str, pd.DataFrame]:
+    """Fetch OHLCV for multiple symbols concurrently."""
+    tasks = [
+        self.exchange.get_klines(symbol, '1h', limit=500)
+        for symbol in symbols
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    data = {}
+    for symbol, result in zip(symbols, results):
+        if isinstance(result, Exception):
+            logger.error(f"Failed to fetch {symbol}: {result}")
+        else:
+            data[symbol] = pd.DataFrame(result)
+    
+    return data
+```
+
+---
+
+## 🔒 SECURITY RULES
+
+### 1. API Key Handling
+
+```python
+# ❌ FORBIDDEN:
+api_key = "abc123..."  # Hardcoded
+
+# ✅ REQUIRED:
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+api_key = os.getenv('BINANCE_API_KEY')
+api_secret = os.getenv('BINANCE_API_SECRET')
+
+if not api_key or not api_secret:
+    raise ValueError("API credentials not found in environment")
+```
+
+### 2. Never Log Sensitive Data
+
+```python
+# ❌ FORBIDDEN:
+logger.info(f"Using API key: {api_key}")
+
+# ✅ REQUIRED:
+logger.info("API credentials loaded successfully")
+logger.debug(f"API key length: {len(api_key)}")  # OK to log length
+```
+
+---
+
+## 📝 DOCUMENTATION RULES
+
+### 1. Module-Level Docstrings
+
+```python
+"""
+Volume Profile Analyzer Module
+
+This module implements professional volume profile analysis for cryptocurrency
+trading. Volume profile shows the distribution of trading volume across different
+price levels, revealing important support/resistance zones.
+
+Key Concepts:
+    POC (Point of Control): Price level with highest volume
+    VAH (Value Area High): Top of 70% volume range
+    VAL (Value Area Low): Bottom of 70% volume range
+    HVN (High Volume Nodes): Strong support/resistance levels
+    LVN (Low Volume Nodes): Areas where price moves quickly
+
+Usage:
+    >>> analyzer = VolumeProfileAnalyzer(num_bins=100)
+    >>> vp = analyzer.calculate_volume_profile(df, period_hours=24)
+    >>> print(f"POC: {vp.poc}, VAH: {vp.vah}, VAL: {vp.val}")
+
+Author: Trading Team
+Created: 2025-01-27
+"""
+```
+
+### 2. Complex Logic Comments
+
+```python
+# When calculating Value Area, we need to find the price range
+# that contains 70% of total volume. We do this by:
+# 1. Sort price bins by volume (highest first)
+# 2. Keep adding bins until we reach 70% of total volume
+# 3. The highest and lowest prices in this set form VAH and VAL
+sorted_indices = np.argsort(volume_distribution)[::-1]
+va_indices = []
+cumulative_volume = 0
+
+for idx in sorted_indices:
+    cumulative_volume += volume_distribution[idx]
+    va_indices.append(idx)
+    if cumulative_volume >= total_volume * 0.70:
+        break
+
+vah = price_levels[max(va_indices)]
+val = price_levels[min(va_indices)]
+```
+
+---
+
+## 🧪 TESTING RULES
+
+### 1. Unit Tests for Core Logic
+
+```python
+# tests/unit/test_volume_profile.py
+
+import pytest
+import pandas as pd
+import numpy as np
+from src.data.volume_profile import VolumeProfileAnalyzer
+
+def test_volume_profile_calculation():
+    """Test volume profile calculates POC correctly."""
+    # Create test data with known volume distribution
+    df = pd.DataFrame({
+        'timestamp': pd.date_range('2024-01-01', periods=100, freq='1h'),
+        'open': [100] * 100,
+        'high': [101] * 100,
+        'low': [99] * 100,
+        'close': [100] * 100,
+        'volume': [1000] * 100,
+        'symbol': ['BTCUSDT'] * 100
+    }).set_index('timestamp')
+    
+    # Add spike in volume at specific price
+    df.loc[df.index[50], 'volume'] = 10000
+    
+    analyzer = VolumeProfileAnalyzer(num_bins=50)
+    vp = analyzer.calculate_volume_profile(df, period_hours=100)
+    
+    # POC should be near the high volume candle
+    assert abs(vp.poc - 100) < 1.0
+    assert vp.val < vp.vah
+    assert len(vp.hvn_levels) > 0
+
+def test_volume_profile_handles_empty_data():
+    """Test volume profile handles edge cases."""
+    df = pd.DataFrame()
+    analyzer = VolumeProfileAnalyzer()
+    
+    with pytest.raises(ValueError):
+        analyzer.calculate_volume_profile(df)
+```
+
+---
+
+## 🎨 CODE STYLE
+
+### Naming Conventions
+
+```python
+# Classes: PascalCase
+class VolumeProfileAnalyzer:
+    pass
+
+# Functions/methods: snake_case
+def calculate_position_size():
+    pass
+
+# Constants: UPPER_SNAKE_CASE
+MAX_POSITION_SIZE = 0.20
+DEFAULT_STOP_LOSS_PERCENT = 0.02
+
+# Private methods: _leading_underscore
+def _validate_inputs(self):
+    pass
+
+# Type variables: PascalCase with T prefix
+TStrategy = TypeVar('TStrategy', bound='BaseStrategy')
+```
+
+### Import Organization
+
+```python
+# Standard library
+import os
+import sys
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional, Tuple
+
+# Third-party
+import numpy as np
+import pandas as pd
+from loguru import logger
+
+# Local modules
+from src.core.exchange import BinanceExchange
+from src.data.volume_profile import VolumeProfileAnalyzer
+from src.models.signal import Signal
+```
+
+---
+
+## 🚨 COMMON MISTAKES TO AVOID
+
+### Mistake 1: Blocking Async Code
+
+```python
+# ❌ WRONG:
+async def main():
+    time.sleep(60)  # Blocks entire event loop!
+
+# ✅ CORRECT:
+async def main():
+    await asyncio.sleep(60)  # Non-blocking
+```
+
+### Mistake 2: Ignoring Rate Limits
+
+```python
+# ❌ DANGEROUS:
+for symbol in symbols:
+    price = exchange.get_price(symbol)  # 100 requests instantly!
+
+# ✅ SAFE:
+for symbol in symbols:
+    await self._check_rate_limit()
+    price = await exchange.get_price(symbol)
+    await asyncio.sleep(0.1)  # Rate limiting
+```
+
+### Mistake 3: Not Validating External Data
+
+```python
+# ❌ UNSAFE:
+def process_orderbook(ob):
+    best_bid = ob['bids'][0][0]  # Might crash!
+
+# ✅ SAFE:
+def process_orderbook(ob: dict) -> Optional[float]:
+    if not ob or 'bids' not in ob or not ob['bids']:
+        logger.warning("Invalid orderbook data")
+        return None
+    
+    try:
+        best_bid = float(ob['bids'][0][0])
+        return best_bid
+    except (IndexError, ValueError, TypeError) as e:
+        logger.error(f"Error parsing orderbook: {e}")
+        return None
+```
+
+---
+
+## 📊 METRICS & MONITORING
+
+### Log Levels
+
+```python
+# DEBUG: Detailed diagnostic info
+logger.debug(f"Volume profile cache hit for {symbol}")
+
+# INFO: General informational messages
+logger.info(f"Analyzing {symbol} at {price}")
+logger.info(f"BUY signal generated: score={score:.1f}/10")
+
+# WARNING: Something unexpected but handled
+logger.warning(f"Low liquidity ({liquidity:.0f} USDT), skipping trade")
+
+# ERROR: Error that prevented operation
+logger.error(f"Failed to fetch orderbook: {e}")
+
+# CRITICAL: Severe error requiring immediate attention
+logger.critical("Daily loss limit exceeded, stopping bot!")
+```
+
+### Performance Metrics
+
+```python
+# Measure critical paths
+import time
+
+async def generate_signal(self, df: pd.DataFrame) -> Optional[Signal]:
+    start_time = time.time()
+    
+    # ... signal generation logic ...
+    
+    elapsed_ms = (time.time() - start_time) * 1000
+    
+    if elapsed_ms > 200:
+        logger.warning(f"Signal generation took {elapsed_ms:.0f}ms (target: <200ms)")
+    else:
+        logger.debug(f"Signal generated in {elapsed_ms:.0f}ms")
+    
+    return signal
+```
+
+---
+
+## ✅ PRE-COMMIT CHECKLIST
+
+Before committing code, verify:
+
+```
+Code Quality:
+□ All functions have type hints
+□ All classes/functions have docstrings
+□ No TODO or placeholder comments
+□ No print() statements (use logger)
+□ No hardcoded values
+□ Error handling for all external calls
+
+Testing:
+□ Unit tests written for core logic
+□ Tests pass locally
+□ Edge cases handled
+
+Security:
+□ No API keys in code
+□ Sensitive data not logged
+□ Input validation present
+
+Performance:
+□ Expensive operations cached
+□ Async used for I/O
+□ No unnecessary loops on DataFrames
+
+Documentation:
+□ README updated if needed
+□ Complex logic has comments
+□ Breaking changes documented
+```
+
+---
+
+## 🎯 CURSOR-SPECIFIC PROMPTS
+
+### For Data Analysis Files:
+
+```
+Create {filename} with:
+
+Full implementation including:
+- Complete algorithms (no TODOs)
+- Type hints on all functions
+- Comprehensive docstrings with examples
+- Error handling with specific exceptions
+- Caching for expensive operations
+- Logging at key decision points
+- Edge case handling (empty data, invalid inputs)
+- Unit test examples
+
+Technical requirements:
+{specific domain knowledge}
+
+Performance target: < {X}ms execution time
+```
+
+### For Strategy Files:
+
+```
+Create {strategy_name} that:
+
+Implements:
+- Inherits from BaseStrategy
+- generate_signal() with multi-factor logic
+- Transparent scoring system (log each factor)
+- Smart stop-loss placement (zone/HVN based)
+- Confidence calculation (score / max_score)
+- Comprehensive metadata in Signal object
+
+Uses these analyzers:
+{list analyzers}
+
+Minimum score threshold: 7.0 / 10.0
+Expected win rate: >60%
+```
+
+---
+
+## 🚀 FINAL NOTES
+
+**Remember: You're building institutional-grade software, not a quick script.**
+
+Standards:
+- Wall Street hedge fund quality, not retail bot quality
+- Every line of code should be production-ready
+- Error handling like lives depend on it (money does!)
+- Performance optimized (< 100ms signal generation)
+- Well-documented (others should understand it)
+- Thoroughly tested (unit tests for core logic)
+
+**When in doubt:**
+1. Read the SYSTEM-ARCHITECTURE.md
+2. Check INSTITUTIONAL-MASTER-PROMPT.md for patterns
+3. Look at existing similar code
+4. Ask for clarification
+
+**Go build something amazing! 💎**
