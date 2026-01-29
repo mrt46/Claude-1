@@ -312,8 +312,15 @@ class TradingBot:
                     self.logger.warning(f"Failed to start dashboard: {e}")
                     self.dashboard = None
             
-            # Start WebSocket connections for real-time data
-            await self._start_websocket_streams()
+            # Start WebSocket connections for real-time data (with timeout protection)
+            self.logger.info("Starting WebSocket streams...")
+            try:
+                await asyncio.wait_for(self._start_websocket_streams(), timeout=30.0)
+                self.logger.info("WebSocket streams initialization complete")
+            except asyncio.TimeoutError:
+                self.logger.warning("WebSocket initialization timed out (continuing with REST API only)")
+            except Exception as e:
+                self.logger.warning(f"WebSocket initialization error: {e} (continuing with REST API only)")
 
             # Initialize and start position monitor for SL/TP enforcement
             self.position_monitor = PositionMonitor(
@@ -339,7 +346,11 @@ class TradingBot:
             )
             self.logger.info("Emergency controller initialized - kill switch active")
 
-            self.logger.info("Trading bot initialized successfully")
+            self.logger.info("=" * 50)
+            self.logger.info("Trading bot initialized successfully!")
+            self.logger.info(f"Symbols: {self.config.trading.symbols}")
+            self.logger.info(f"Testnet: {self.config.exchange.testnet}")
+            self.logger.info("=" * 50)
         except Exception as e:
             self.logger.error(f"Failed to initialize: {e}")
             raise
@@ -392,18 +403,26 @@ class TradingBot:
         4. Execute trades
         """
         self.running = True
-        self.logger.info("Trading bot started")
-        
+        self.logger.info("=" * 50)
+        self.logger.info("Trading bot STARTED - Entering main loop")
+        self.logger.info("=" * 50)
+
         # Update dashboard
         if self.dashboard:
             self.dashboard.update_bot_status("🟢 Running - Starting analysis cycle...")
-        
+            self.dashboard.heartbeat_time = datetime.now()
+
         cycle_count = 0
         portfolio_update_counter = 0
         try:
             while self.running:
                 cycle_count += 1
-                self.logger.info(f"=== Analysis Cycle #{cycle_count} ===")
+                self.logger.info(f"")
+                self.logger.info(f"{'='*20} Analysis Cycle #{cycle_count} {'='*20}")
+
+                # Update dashboard heartbeat
+                if self.dashboard:
+                    self.dashboard.heartbeat_time = datetime.now()
 
                 # Check emergency conditions at the start of each cycle
                 if self.emergency_controller:

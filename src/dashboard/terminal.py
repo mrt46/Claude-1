@@ -491,7 +491,9 @@ class TerminalDashboard:
     def _run_dashboard(self) -> None:
         """Run dashboard in a loop."""
         try:
-            with Live(self._generate_layout(), refresh_per_second=2, screen=True) as live:
+            # Use screen=False to allow logs to be visible alongside dashboard
+            # This provides better debugging while still showing the dashboard
+            with Live(self._generate_layout(), refresh_per_second=2, screen=False, vertical_overflow="visible") as live:
                 while self.running:
                     live.update(self._generate_layout())
                     threading.Event().wait(0.5)  # Update every 0.5 seconds
