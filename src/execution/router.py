@@ -4,7 +4,7 @@ Smart Order Router.
 Determines optimal order type and execution strategy.
 """
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from src.core.logger import get_logger
 
@@ -42,7 +42,7 @@ class SmartOrderRouter:
         order_size_usdt: float,
         liquidity_quality: str,
         spread_quality: str
-    ) -> Dict[str, any]:
+    ) -> Dict[str, Any]:
         """
         Route order to optimal execution strategy.
         

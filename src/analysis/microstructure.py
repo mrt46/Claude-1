@@ -5,7 +5,7 @@ Analyzes spread, liquidity, and execution quality.
 """
 
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from src.analysis.orderbook import OrderBook, OrderBookAnalyzer
 
@@ -45,7 +45,7 @@ class MarketMicrostructure:
     async def analyze_spread_and_liquidity(
         self,
         ob: OrderBook
-    ) -> Dict[str, any]:
+    ) -> Dict[str, Any]:
         """
         Analyze spread and liquidity from order book.
         
