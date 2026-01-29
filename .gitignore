@@ -57,7 +57,7 @@ logs/
 Thumbs.db
 
 # Project specific
-data/
+/data/
 backtests/
 results/
 
