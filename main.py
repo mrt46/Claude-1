@@ -10,8 +10,10 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from src.core.config import Config
+from src.core.emergency_controller import EmergencyController
 from src.core.exchange import BinanceExchange
 from src.core.logger import get_logger
+from src.core.position_monitor import PositionMonitor
 from src.dashboard.terminal import TerminalDashboard
 from src.data.database import RedisClient, TimescaleDBClient
 from src.data.market_data import MarketDataManager
@@ -94,7 +96,13 @@ class TradingBot:
         # Initialize dashboard (optional, non-intrusive)
         self.dashboard: Optional[TerminalDashboard] = None
         self.dashboard_enabled = True  # Can be disabled via config
-        
+
+        # Position monitor for SL/TP enforcement (initialized in initialize())
+        self.position_monitor: Optional[PositionMonitor] = None
+
+        # Emergency controller for crisis situations (initialized in initialize())
+        self.emergency_controller: Optional[EmergencyController] = None
+
         self.running = False
     
     async def _start_websocket_streams(self) -> None:
@@ -306,7 +314,31 @@ class TradingBot:
             
             # Start WebSocket connections for real-time data
             await self._start_websocket_streams()
-            
+
+            # Initialize and start position monitor for SL/TP enforcement
+            self.position_monitor = PositionMonitor(
+                risk_manager=self.risk_manager,
+                exchange=self.exchange,
+                order_lifecycle=self.order_lifecycle,
+                market_data=self.market_data,
+                check_interval=5.0,  # Check positions every 5 seconds
+                trailing_stop_enabled=False,
+                max_position_age_hours=None,  # No time limit
+                adverse_spread_threshold=0.005  # 0.5% spread threshold
+            )
+            await self.position_monitor.start()
+            self.logger.info("Position monitor started - SL/TP enforcement active")
+
+            # Initialize emergency controller for kill switch and emergency stops
+            self.emergency_controller = EmergencyController(
+                risk_manager=self.risk_manager,
+                exchange=self.exchange,
+                max_daily_loss_percent=self.config.risk.max_daily_loss_percent / 100,  # Convert from % to decimal
+                max_single_position_loss_percent=0.10,  # 10% single position loss limit
+                kill_switch_file=None  # Uses default platform-specific path
+            )
+            self.logger.info("Emergency controller initialized - kill switch active")
+
             self.logger.info("Trading bot initialized successfully")
         except Exception as e:
             self.logger.error(f"Failed to initialize: {e}")
@@ -315,14 +347,22 @@ class TradingBot:
     async def shutdown(self) -> None:
         """Shutdown and cleanup."""
         self.running = False
-        
+
+        # Stop position monitor first (critical for safety)
+        if self.position_monitor:
+            try:
+                await self.position_monitor.stop()
+                self.logger.info("Position monitor stopped")
+            except Exception as e:
+                self.logger.error(f"Error stopping position monitor: {e}")
+
         # Stop dashboard
         if self.dashboard:
             try:
                 self.dashboard.stop()
             except Exception:
                 pass
-        
+
         try:
             await self.market_data.ws_manager.disconnect_all()
         except Exception:
@@ -364,7 +404,32 @@ class TradingBot:
             while self.running:
                 cycle_count += 1
                 self.logger.info(f"=== Analysis Cycle #{cycle_count} ===")
-                
+
+                # Check emergency conditions at the start of each cycle
+                if self.emergency_controller:
+                    try:
+                        account_balance = await self.exchange.get_balance("USDT")
+                        emergency_triggered = await self.emergency_controller.check_emergency_triggers(
+                            current_balance=account_balance
+                        )
+                        if emergency_triggered:
+                            self.logger.critical("Emergency triggered - stopping trading loop")
+                            if self.dashboard:
+                                self.dashboard.update_bot_status("🚨 EMERGENCY STOP - Trading halted")
+                            self.running = False
+                            break
+
+                        # Also check if trading is paused
+                        if self.emergency_controller.is_trading_paused():
+                            self.logger.warning("Trading paused - skipping cycle")
+                            if self.dashboard:
+                                self.dashboard.update_bot_status("🟡 Trading paused")
+                            await asyncio.sleep(60)
+                            continue
+
+                    except Exception as e:
+                        self.logger.error(f"Error checking emergency triggers: {e}")
+
                 if self.dashboard:
                     self.dashboard.update_bot_status(f"🟡 Cycle #{cycle_count} - Analyzing symbols...")
                 
