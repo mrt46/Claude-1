@@ -116,7 +116,7 @@ class EmergencyController:
         if daily_start_balance > 0:
             daily_pnl_percent = (daily_pnl / daily_start_balance)
             
-            if daily_pnl_percent < -self.max_daily_loss_percent:
+            if daily_pnl_percent <= -self.max_daily_loss_percent:
                 logger.critical(
                     f"🚨 EMERGENCY: Daily loss {daily_pnl_percent*100:.2f}% exceeds "
                     f"threshold -{self.max_daily_loss_percent*100:.2f}% "
@@ -159,7 +159,7 @@ class EmergencyController:
                 position_value = entry_price * quantity
                 pnl_percent = (unrealized_pnl / position_value) if position_value > 0 else 0.0
                 
-                if pnl_percent < -self.max_single_position_loss_percent:
+                if pnl_percent <= -self.max_single_position_loss_percent:
                     logger.critical(
                         f"🚨 EMERGENCY: Position {symbol} loss {pnl_percent*100:.2f}% "
                         f"exceeds threshold -{self.max_single_position_loss_percent*100:.2f}% "

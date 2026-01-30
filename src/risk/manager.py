@@ -5,7 +5,7 @@ Pre-trade validation and portfolio risk checks.
 """
 
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from src.analysis.microstructure import OrderBook
 from src.core.logger import get_logger
@@ -98,7 +98,7 @@ class RiskManager:
         signal: Signal,
         account_balance: float,
         order_book: OrderBook
-    ) -> Dict[str, any]:
+    ) -> Dict[str, Any]:
         """
         Validate trade before execution.
         

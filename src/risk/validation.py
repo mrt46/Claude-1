@@ -2,7 +2,7 @@
 Pre-trade validation and microstructure checks.
 """
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from src.analysis.microstructure import MarketMicrostructure, OrderBook
 from src.core.logger import get_logger
@@ -36,7 +36,7 @@ class MicrostructureValidator:
         self,
         order_book: OrderBook,
         order_size_usdt: float
-    ) -> Dict[str, any]:
+    ) -> Dict[str, Any]:
         """
         Validate microstructure for trade execution.
         

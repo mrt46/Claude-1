@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 import aiohttp
 
 from src.core.logger import get_logger
+from src.core.rate_limiter import get_rate_limiter
 
 logger = get_logger(__name__)
 
@@ -195,17 +196,21 @@ class BinanceExchange:
     async def get_account_info(self) -> Dict:
         """
         Get account information.
-        
+
         Returns:
             Account information dictionary
-            
+
         Raises:
             RuntimeError: If session not initialized
             ValueError: If timestamp error (-1021) occurs and re-sync fails
         """
         if not self.session:
             raise RuntimeError("Exchange client not initialized. Use async context manager.")
-        
+
+        # Rate limiting (weight=10 for account endpoint)
+        rate_limiter = get_rate_limiter()
+        await rate_limiter.wait_if_needed(weight=10)
+
         # Check and sync time if needed
         await self._check_time_sync()
         
@@ -272,7 +277,7 @@ class BinanceExchange:
     ) -> Dict:
         """
         Place an order.
-        
+
         Args:
             symbol: Trading symbol
             side: 'BUY' or 'SELL'
@@ -281,17 +286,21 @@ class BinanceExchange:
             quote_order_qty: Order quantity in quote asset (for market orders)
             price: Limit price (required for limit orders)
             time_in_force: Time in force (GTC, IOC, FOK)
-        
+
         Returns:
             Order response dictionary
-            
+
         Raises:
             RuntimeError: If session not initialized
             ValueError: If order parameters are invalid or order fails
         """
         if not self.session:
             raise RuntimeError("Exchange client not initialized.")
-        
+
+        # Rate limiting for order requests (weight=1, is_order=True)
+        rate_limiter = get_rate_limiter()
+        await rate_limiter.wait_if_needed(weight=1, is_order=True)
+
         # Check and sync time if needed
         await self._check_time_sync()
         

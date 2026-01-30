@@ -13,15 +13,10 @@ from typing import Dict, Optional
 
 from src.core.exchange import BinanceExchange
 from src.core.logger import get_logger
-from src.execution.exceptions import OrderExecutionError
+from src.execution.exceptions import OrderExecutionError, OrderStatusError
 from src.execution.lifecycle import Order
 
 logger = get_logger(__name__)
-
-
-class OrderStatusError(OrderExecutionError):
-    """Exception raised when order status polling fails."""
-    pass
 
 
 @dataclass
