@@ -266,12 +266,115 @@ class TimescaleDBClient:
             for r in records
         ]
 
-    async def store_trade(self, trade: Dict) -> bool:
+    async def initialize_schema(self) -> bool:
         """
-        Store a trade record.
+        Initialize database schema (create tables if not exist).
+
+        Returns:
+            True if successful
+        """
+        if not self.pool:
+            logger.error("Database not connected")
+            return False
+
+        try:
+            async with self.pool.acquire() as conn:
+                # Trades table (completed trades with PnL)
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS trades (
+                        id TEXT PRIMARY KEY,
+                        symbol TEXT NOT NULL,
+                        side TEXT NOT NULL,
+                        entry_price NUMERIC NOT NULL,
+                        exit_price NUMERIC NOT NULL,
+                        quantity NUMERIC NOT NULL,
+                        position_value_usdt NUMERIC NOT NULL,
+                        stop_loss NUMERIC,
+                        take_profit NUMERIC,
+                        trailing_stop BOOLEAN DEFAULT FALSE,
+                        pnl NUMERIC NOT NULL,
+                        pnl_percent NUMERIC NOT NULL,
+                        entry_fee NUMERIC NOT NULL,
+                        exit_fee NUMERIC NOT NULL,
+                        total_fees NUMERIC NOT NULL,
+                        closure_reason TEXT NOT NULL,
+                        strategy_name TEXT,
+                        entry_time TIMESTAMPTZ NOT NULL,
+                        exit_time TIMESTAMPTZ NOT NULL,
+                        hold_duration_seconds INTEGER NOT NULL,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """)
+
+                # Index for fast queries
+                await conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_trades_exit_time
+                    ON trades(exit_time DESC)
+                """)
+
+                await conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_trades_symbol
+                    ON trades(symbol, exit_time DESC)
+                """)
+
+                # Positions table (open positions)
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS positions (
+                        id TEXT PRIMARY KEY,
+                        symbol TEXT NOT NULL,
+                        side TEXT NOT NULL,
+                        entry_price NUMERIC NOT NULL,
+                        quantity NUMERIC NOT NULL,
+                        position_value_usdt NUMERIC NOT NULL,
+                        stop_loss NUMERIC,
+                        take_profit NUMERIC,
+                        trailing_stop_percent NUMERIC,
+                        max_price NUMERIC,
+                        min_price NUMERIC,
+                        unrealized_pnl NUMERIC DEFAULT 0,
+                        unrealized_pnl_percent NUMERIC DEFAULT 0,
+                        strategy_name TEXT,
+                        opened_at TIMESTAMPTZ NOT NULL,
+                        partial_fill BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """)
+
+                # OHLCV table (if not exists)
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS ohlcv (
+                        symbol TEXT NOT NULL,
+                        interval TEXT NOT NULL,
+                        timestamp TIMESTAMPTZ NOT NULL,
+                        open NUMERIC NOT NULL,
+                        high NUMERIC NOT NULL,
+                        low NUMERIC NOT NULL,
+                        close NUMERIC NOT NULL,
+                        volume NUMERIC NOT NULL,
+                        trades INTEGER DEFAULT 0,
+                        PRIMARY KEY (symbol, interval, timestamp)
+                    )
+                """)
+
+                logger.info("Database schema initialized successfully")
+                return True
+
+        except Exception as e:
+            logger.error(f"Error initializing schema: {e}")
+            return False
+
+    async def store_completed_trade(self, trade: Dict) -> bool:
+        """
+        Store a completed trade record with PnL.
 
         Args:
-            trade: Trade data dictionary
+            trade: Trade data dictionary with keys:
+                - id, symbol, side, entry_price, exit_price, quantity
+                - position_value_usdt, stop_loss, take_profit, trailing_stop
+                - pnl, pnl_percent, entry_fee, exit_fee, total_fees
+                - closure_reason, strategy_name, entry_time, exit_time
+                - hold_duration_seconds
 
         Returns:
             True if successful
@@ -281,33 +384,128 @@ class TimescaleDBClient:
 
         query = """
             INSERT INTO trades (
-                id, symbol, side, order_type, quantity, price,
-                stop_loss, take_profit, status, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-            ON CONFLICT (id) DO UPDATE SET
-                status = EXCLUDED.status,
-                updated_at = EXCLUDED.updated_at
+                id, symbol, side, entry_price, exit_price, quantity,
+                position_value_usdt, stop_loss, take_profit, trailing_stop,
+                pnl, pnl_percent, entry_fee, exit_fee, total_fees,
+                closure_reason, strategy_name, entry_time, exit_time,
+                hold_duration_seconds
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+            )
         """
 
         try:
             await self.execute(
                 query,
-                trade.get('id'),
-                trade.get('symbol'),
-                trade.get('side'),
-                trade.get('order_type'),
-                trade.get('quantity'),
-                trade.get('price'),
+                trade['id'],
+                trade['symbol'],
+                trade['side'],
+                trade['entry_price'],
+                trade['exit_price'],
+                trade['quantity'],
+                trade['position_value_usdt'],
                 trade.get('stop_loss'),
                 trade.get('take_profit'),
-                trade.get('status'),
-                trade.get('created_at', datetime.now(timezone.utc)),
-                trade.get('updated_at', datetime.now(timezone.utc))
+                trade.get('trailing_stop', False),
+                trade['pnl'],
+                trade['pnl_percent'],
+                trade['entry_fee'],
+                trade['exit_fee'],
+                trade['total_fees'],
+                trade['closure_reason'],
+                trade.get('strategy_name'),
+                trade['entry_time'],
+                trade['exit_time'],
+                trade['hold_duration_seconds']
+            )
+            logger.info(
+                f"Trade stored: {trade['symbol']} {trade['side']} "
+                f"PnL: ${trade['pnl']:.2f} ({trade['pnl_percent']:+.2f}%)"
             )
             return True
         except Exception as e:
-            logger.error(f"Error storing trade: {e}")
+            logger.error(f"Error storing completed trade: {e}")
             return False
+
+    async def get_recent_trades(self, limit: int = 20, symbol: Optional[str] = None) -> List[Dict]:
+        """
+        Get recent completed trades.
+
+        Args:
+            limit: Maximum number of trades to return
+            symbol: Filter by symbol (optional)
+
+        Returns:
+            List of trade records
+        """
+        if not self.pool:
+            return []
+
+        if symbol:
+            query = """
+                SELECT * FROM trades
+                WHERE symbol = $1
+                ORDER BY exit_time DESC
+                LIMIT $2
+            """
+            records = await self.fetch(query, symbol, limit)
+        else:
+            query = """
+                SELECT * FROM trades
+                ORDER BY exit_time DESC
+                LIMIT $1
+            """
+            records = await self.fetch(query, limit)
+
+        return [dict(r) for r in records]
+
+    async def get_daily_stats(self) -> Dict:
+        """
+        Get today's trading statistics.
+
+        Returns:
+            Dictionary with:
+            - total_trades, winning_trades, losing_trades, win_rate
+            - total_pnl, total_fees, net_pnl
+            - avg_hold_duration_minutes
+        """
+        if not self.pool:
+            return {}
+
+        query = """
+            SELECT
+                COUNT(*) as total_trades,
+                COUNT(*) FILTER (WHERE pnl > 0) as winning_trades,
+                COUNT(*) FILTER (WHERE pnl < 0) as losing_trades,
+                COALESCE(SUM(pnl), 0) as total_pnl,
+                COALESCE(SUM(total_fees), 0) as total_fees,
+                COALESCE(AVG(hold_duration_seconds), 0) as avg_hold_seconds
+            FROM trades
+            WHERE exit_time >= CURRENT_DATE
+        """
+
+        try:
+            record = await self.fetchone(query)
+            if not record:
+                return {}
+
+            total = record['total_trades']
+            winning = record['winning_trades']
+
+            return {
+                'total_trades': total,
+                'winning_trades': winning,
+                'losing_trades': record['losing_trades'],
+                'win_rate': (winning / total * 100) if total > 0 else 0.0,
+                'total_pnl': float(record['total_pnl']),
+                'total_fees': float(record['total_fees']),
+                'net_pnl': float(record['total_pnl']),
+                'avg_hold_duration_minutes': int(record['avg_hold_seconds'] / 60)
+            }
+        except Exception as e:
+            logger.error(f"Error getting daily stats: {e}")
+            return {}
 
 
 class RedisClient:
