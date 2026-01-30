@@ -585,21 +585,35 @@ class MarketDataManager:
     async def get_order_book_snapshot(
         self,
         symbol: str,
-        limit: int = 100
+        limit: int = 100,
+        cache_ttl_seconds: float = 1.0
     ) -> Dict:
         """
-        Get order book snapshot.
+        Get order book snapshot with caching.
 
         Args:
             symbol: Trading symbol
             limit: Depth limit
+            cache_ttl_seconds: Cache TTL in seconds (default: 1.0)
 
         Returns:
             Order book data
         """
         symbol = normalize_symbol(symbol)
 
+        # Check cache first
+        if symbol in self._orderbook_cache:
+            cached_data = self._orderbook_cache[symbol]
+            cached_timestamp = cached_data.get('timestamp', 0)
+            current_timestamp = int(datetime.now(timezone.utc).timestamp() * 1000)
+            age_seconds = (current_timestamp - cached_timestamp) / 1000.0
+
+            if age_seconds < cache_ttl_seconds:
+                logger.debug(f"Using cached order book for {symbol} (age: {age_seconds:.2f}s)")
+                return cached_data
+
         try:
+            # Fetch fresh data
             data = await self.rest_client.get_order_book(symbol, limit)
             data['timestamp'] = int(datetime.now(timezone.utc).timestamp() * 1000)
 
@@ -610,6 +624,10 @@ class MarketDataManager:
 
         except Exception as e:
             logger.error(f"Error fetching order book: {e}")
+            # Return cached data if available, even if stale
+            if symbol in self._orderbook_cache:
+                logger.warning(f"Returning stale cached order book for {symbol}")
+                return self._orderbook_cache[symbol]
             return {'bids': [], 'asks': [], 'timestamp': 0}
 
     async def get_recent_trades(
