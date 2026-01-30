@@ -45,9 +45,10 @@ class TestEmergencyController:
     
     @pytest.fixture
     def temp_kill_switch_file(self):
-        """Create temporary kill switch file path"""
-        with tempfile.NamedTemporaryFile(delete=False) as f:
-            temp_path = f.name
+        """Create temporary kill switch file path (but not the file itself)"""
+        # Generate a unique path without creating the file
+        # This way the kill switch is not triggered unless explicitly created
+        temp_path = tempfile.mktemp(prefix='kill_switch_test_')
         yield temp_path
         # Cleanup
         if os.path.exists(temp_path):
