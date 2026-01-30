@@ -247,7 +247,8 @@ class Config:
         )
         
         # Trading config
-        symbols_str = os.getenv("TRADING_SYMBOLS", "BTCUSDT,ETHUSDT")
+        # Top 5 liquid coins by volume (BTC, ETH, BNB, SOL, XRP)
+        symbols_str = os.getenv("TRADING_SYMBOLS", "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT")
         self.trading = TradingConfig(
             symbols=[s.strip() for s in symbols_str.split(",")],
             base_currency=os.getenv("BASE_CURRENCY", "USDT"),

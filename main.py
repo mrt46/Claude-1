@@ -319,7 +319,18 @@ class TradingBot:
                 self.logger.info(f"⚠️  Partial database connections (TimescaleDB: {db_connected}, Redis: {redis_connected})")
             else:
                 self.logger.info("ℹ️  Running without databases (data won't be persisted, but bot will work)")
-            
+
+            # Initialize database schema if connected
+            if db_connected:
+                try:
+                    schema_initialized = await self.timescaledb.initialize_schema()
+                    if schema_initialized:
+                        self.logger.info("✅ Database schema initialized (tables created)")
+                    else:
+                        self.logger.warning("⚠️  Database schema initialization failed")
+                except Exception as e:
+                    self.logger.warning(f"Schema initialization error: {e}")
+
             # Initialize exchange
             await self.exchange.__aenter__()
             
@@ -337,7 +348,9 @@ class TradingBot:
             # Initialize dashboard (optional)
             if self.dashboard_enabled:
                 try:
-                    self.dashboard = TerminalDashboard()
+                    self.dashboard = TerminalDashboard(
+                        database=self.timescaledb if db_connected else None
+                    )
                     self.dashboard.start()
                     self.dashboard.update_account_info(usdt_balance, 0.0, 0.0)
                     
@@ -372,6 +385,7 @@ class TradingBot:
                 risk_manager=self.risk_manager,
                 exchange=self.exchange,
                 order_lifecycle=self.order_lifecycle,
+                database=self.timescaledb if db_connected else None,  # Trade logging
                 market_data=self.market_data,
                 check_interval=5.0,  # Check positions every 5 seconds
                 trailing_stop_enabled=False,
@@ -379,7 +393,8 @@ class TradingBot:
                 adverse_spread_threshold=0.005  # 0.5% spread threshold
             )
             await self.position_monitor.start()
-            self.logger.info("Position monitor started - SL/TP enforcement active")
+            self.logger.info("Position monitor started - SL/TP enforcement active" +
+                           (" (trade logging enabled)" if db_connected else " (trade logging disabled)"))
 
             # Initialize emergency controller for kill switch and emergency stops
             self.emergency_controller = EmergencyController(

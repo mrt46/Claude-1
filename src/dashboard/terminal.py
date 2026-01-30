@@ -18,6 +18,7 @@ from rich.table import Table
 from rich.text import Text
 
 from src.core.logger import get_logger
+from src.data.database import TimescaleDBClient
 
 logger = get_logger(__name__)
 
@@ -36,12 +37,18 @@ class TerminalDashboard:
     Non-intrusive: Can be started/stopped independently.
     """
     
-    def __init__(self):
-        """Initialize terminal dashboard."""
+    def __init__(self, database: Optional[TimescaleDBClient] = None):
+        """
+        Initialize terminal dashboard.
+
+        Args:
+            database: Optional TimescaleDBClient for trade history
+        """
         self.console = Console()
         self.running = False
         self.thread: Optional[threading.Thread] = None
-        
+        self.database = database
+
         # State data (updated by bot)
         self.account_balance: float = 0.0
         self.daily_pnl: float = 0.0
@@ -57,7 +64,7 @@ class TerminalDashboard:
         self.total_signals: int = 0
         self.approved_trades: int = 0
         self.rejected_trades: int = 0
-        
+
         # Bot activity tracking
         self.bot_status: str = "🟡 Initializing"
         self.last_analysis_time: Optional[datetime] = None
@@ -65,9 +72,13 @@ class TerminalDashboard:
         self.last_analysis_result: Optional[Dict] = None
         self.last_symbol_analyzed: Optional[str] = None
         self.heartbeat_time: Optional[datetime] = None
-        
+
         # Wallet/Portfolio data
         self.wallet_data: Optional[Dict] = None
+
+        # Trade history cache
+        self.recent_trades: List[Dict] = []
+        self.daily_stats: Dict = {}
     
     def update_account_info(self, balance: float, pnl: float, pnl_percent: float) -> None:
         """Update account information."""
@@ -439,45 +450,168 @@ class TerminalDashboard:
         
         return Panel(table, title="[bold yellow]Wallet[/bold yellow]", border_style="yellow")
     
+    def _create_trade_history_panel(self) -> Panel:
+        """Create recent trades panel with PnL."""
+        # Fetch recent trades from database
+        self._fetch_recent_trades()
+
+        if not self.recent_trades:
+            return Panel(
+                Text("No trades yet", justify="center", style="dim"),
+                title="[bold green]📊 Recent Trades[/bold green]",
+                border_style="green"
+            )
+
+        table = Table.grid(padding=(0, 1))
+        table.add_column(style="cyan", width=10)
+        table.add_column(style="white", width=5, justify="center")
+        table.add_column(style="white", width=10, justify="right")
+        table.add_column(style="white", width=15, justify="right")
+        table.add_column(style="white", width=10, justify="center")
+
+        # Header row
+        table.add_row(
+            "[bold]Symbol[/bold]",
+            "[bold]Side[/bold]",
+            "[bold]PnL[/bold]",
+            "[bold]Fees[/bold]",
+            "[bold]Reason[/bold]"
+        )
+        table.add_row("─" * 10, "─" * 5, "─" * 10, "─" * 15, "─" * 10)
+
+        for trade in self.recent_trades[:10]:  # Show last 10 trades
+            symbol = str(trade.get('symbol', 'N/A'))[:8]
+            side = str(trade.get('side', 'N/A'))
+            pnl = float(trade.get('pnl', 0.0))
+            pnl_percent = float(trade.get('pnl_percent', 0.0))
+            total_fees = float(trade.get('total_fees', 0.0))
+            reason = str(trade.get('closure_reason', 'N/A'))
+
+            # Color code
+            pnl_color = "green" if pnl >= 0 else "red"
+            side_color = "green" if side == "BUY" else "red"
+            pnl_sign = "+" if pnl >= 0 else ""
+
+            # Shorten reason
+            reason_short = reason.replace('_HIT', '').replace('_', ' ')[:10]
+
+            table.add_row(
+                symbol,
+                f"[{side_color}]{side}[/{side_color}]",
+                f"[{pnl_color}]{pnl_sign}${pnl:.2f}[/{pnl_color}]",
+                f"[{pnl_color}]({pnl_sign}{pnl_percent:.1f}%) -${total_fees:.2f}[/{pnl_color}]",
+                f"[dim]{reason_short}[/dim]"
+            )
+
+        return Panel(table, title="[bold green]📊 Recent Trades[/bold green]", border_style="green")
+
+    def _create_daily_stats_panel(self) -> Panel:
+        """Create daily stats panel."""
+        # Fetch daily stats from database
+        self._fetch_daily_stats()
+
+        table = Table.grid(padding=1)
+        table.add_column(style="cyan", justify="right")
+        table.add_column(style="magenta")
+
+        if not self.daily_stats or self.daily_stats.get('total_trades', 0) == 0:
+            table.add_row("Today:", "No trades yet")
+        else:
+            total = self.daily_stats.get('total_trades', 0)
+            winning = self.daily_stats.get('winning_trades', 0)
+            losing = self.daily_stats.get('losing_trades', 0)
+            win_rate = self.daily_stats.get('win_rate', 0.0)
+            total_pnl = self.daily_stats.get('total_pnl', 0.0)
+            total_fees = self.daily_stats.get('total_fees', 0.0)
+            avg_hold = self.daily_stats.get('avg_hold_duration_minutes', 0)
+
+            pnl_color = "green" if total_pnl >= 0 else "red"
+            pnl_sign = "+" if total_pnl >= 0 else ""
+
+            table.add_row("Total Trades:", f"{total}")
+            table.add_row("Winning:", f"[green]{winning}[/green]")
+            table.add_row("Losing:", f"[red]{losing}[/red]")
+            table.add_row("Win Rate:", f"{win_rate:.1f}%")
+            table.add_row("", "")
+            table.add_row("Total PnL:", f"[{pnl_color}]{pnl_sign}${total_pnl:.2f}[/{pnl_color}]")
+            table.add_row("Total Fees:", f"[red]-${total_fees:.2f}[/red]")
+            table.add_row("Avg Hold:", f"{avg_hold}min")
+
+        return Panel(table, title="[bold yellow]📈 Today's Stats[/bold yellow]", border_style="yellow")
+
+    def _fetch_recent_trades(self) -> None:
+        """Fetch recent trades from database (non-blocking)."""
+        if not self.database or not self.database.is_connected():
+            return
+
+        try:
+            # Create event loop for async call
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self.recent_trades = loop.run_until_complete(
+                self.database.get_recent_trades(limit=10)
+            )
+            loop.close()
+        except Exception as e:
+            logger.debug(f"Failed to fetch trades: {e}")
+            self.recent_trades = []
+
+    def _fetch_daily_stats(self) -> None:
+        """Fetch daily stats from database (non-blocking)."""
+        if not self.database or not self.database.is_connected():
+            return
+
+        try:
+            # Create event loop for async call
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self.daily_stats = loop.run_until_complete(
+                self.database.get_daily_stats()
+            )
+            loop.close()
+        except Exception as e:
+            logger.debug(f"Failed to fetch daily stats: {e}")
+            self.daily_stats = {}
+
     def _generate_layout(self) -> Layout:
         """Generate dashboard layout."""
         layout = Layout()
-        
+
         layout.split_column(
             Layout(name="header", size=3),
             Layout(name="main"),
             Layout(name="footer", size=3)
         )
-        
+
         layout["main"].split_row(
-            Layout(name="left"),
-            Layout(name="right")
+            Layout(name="left", ratio=2),
+            Layout(name="right", ratio=3)
         )
-        
+
         layout["left"].split_column(
             Layout(name="performance"),
             Layout(name="wallet"),
-            Layout(name="positions")
+            Layout(name="daily_stats")
         )
-        
+
         layout["right"].split_column(
-            Layout(name="signals"),
-            Layout(name="activity"),
+            Layout(name="trades"),
+            Layout(name="positions"),
             Layout(name="system")
         )
-        
+
         # Header
         header_text = Text("🏛️ INSTITUTIONAL TRADING BOT - LIVE DASHBOARD", style="bold white on blue", justify="center")
         layout["header"].update(Panel(header_text, border_style="blue"))
-        
+
         # Main panels
         layout["performance"].update(self._create_performance_panel())
         layout["wallet"].update(self._create_wallet_panel())
+        layout["daily_stats"].update(self._create_daily_stats_panel())
+        layout["trades"].update(self._create_trade_history_panel())
         layout["positions"].update(self._create_positions_panel())
-        layout["signals"].update(self._create_signals_panel())
-        layout["activity"].update(self._create_activity_panel())
         layout["system"].update(self._create_system_panel())
-        
+
         # Footer
         footer_text = Text(
             f"Press Ctrl+C to stop | Bot Status: {'🟢 Running' if self.running else '🔴 Stopped'}",
@@ -485,18 +619,23 @@ class TerminalDashboard:
             justify="center"
         )
         layout["footer"].update(Panel(footer_text, border_style="dim"))
-        
+
         return layout
     
     def _run_dashboard(self) -> None:
         """Run dashboard in a loop."""
         try:
-            # Use screen=False to allow logs to be visible alongside dashboard
-            # This provides better debugging while still showing the dashboard
-            with Live(self._generate_layout(), refresh_per_second=2, screen=False, vertical_overflow="visible") as live:
+            # Use screen=True for fixed display (no scrolling)
+            # Set vertical_overflow="crop" to prevent content overflow
+            with Live(
+                self._generate_layout(),
+                refresh_per_second=1,  # Refresh once per second (database queries)
+                screen=True,  # Full screen mode (fixed, no scrolling)
+                vertical_overflow="crop"  # Crop overflow instead of scrolling
+            ) as live:
                 while self.running:
                     live.update(self._generate_layout())
-                    threading.Event().wait(0.5)  # Update every 0.5 seconds
+                    threading.Event().wait(1.0)  # Update every 1 second
         except KeyboardInterrupt:
             self.running = False
         except Exception as e:

@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 
 from src.core.exchange import BinanceExchange
 from src.core.logger import get_logger
+from src.data.database import TimescaleDBClient
 from src.data.market_data import MarketDataManager
 from src.execution.lifecycle import OrderLifecycleManager
 from src.risk.manager import RiskManager
@@ -39,6 +40,7 @@ class PositionMonitor:
         risk_manager: RiskManager,
         exchange: BinanceExchange,
         order_lifecycle: OrderLifecycleManager,
+        database: Optional[TimescaleDBClient] = None,
         market_data: Optional[MarketDataManager] = None,
         check_interval: float = 5.0,
         trailing_stop_enabled: bool = False,
@@ -47,41 +49,44 @@ class PositionMonitor:
     ):
         """
         Initialize position monitor.
-        
+
         Args:
             risk_manager: RiskManager instance with open positions
             exchange: Exchange instance for price data and order execution
             order_lifecycle: OrderLifecycleManager for order tracking
+            database: Optional TimescaleDBClient for trade logging
             market_data: Optional MarketDataManager for order book data
             check_interval: Seconds between position checks (default: 5.0)
             trailing_stop_enabled: Enable trailing stops (default: False)
             max_position_age_hours: Max hold time in hours (default: None = no limit)
             adverse_spread_threshold: Close if spread > threshold (default: 0.5%)
-            
+
         Raises:
             ValueError: If check_interval <= 0
         """
         if check_interval <= 0:
             raise ValueError(f"check_interval must be > 0, got {check_interval}")
-        
+
         self.risk_manager = risk_manager
         self.exchange = exchange
         self.order_lifecycle = order_lifecycle
+        self.database = database
         self.market_data = market_data
-        
+
         self.check_interval = check_interval
         self.trailing_stop_enabled = trailing_stop_enabled
         self.max_position_age_hours = max_position_age_hours
         self.adverse_spread_threshold = adverse_spread_threshold
-        
+
         self.running = False
         self.monitor_task: Optional[asyncio.Task] = None
-        
+
         logger.info(
             f"PositionMonitor initialized: "
             f"check_interval={self.check_interval}s, "
             f"trailing_stop={trailing_stop_enabled}, "
-            f"max_age={max_position_age_hours}h"
+            f"max_age={max_position_age_hours}h, "
+            f"database={'enabled' if database else 'disabled'}"
         )
     
     async def start(self) -> None:
@@ -616,27 +621,66 @@ class PositionMonitor:
             if order_status.get('status') == 'FILLED':
                 filled_qty = float(order_status.get('executedQty', quantity))
                 fill_price = float(order_status.get('price', current_price))
-                
+
                 # Calculate PnL
                 entry_price = position.get('entry_price', 0.0)
                 if side == 'BUY':
                     gross_pnl = (fill_price - entry_price) * filled_qty
                 else:
                     gross_pnl = (entry_price - fill_price) * filled_qty
-                
-                # Estimate fees (0.1% maker/taker)
+
+                # Calculate fees (0.1% maker/taker)
                 entry_fee = entry_price * quantity * 0.001
                 exit_fee = fill_price * filled_qty * 0.001
-                net_pnl = gross_pnl - entry_fee - exit_fee
+                total_fees = entry_fee + exit_fee
+                net_pnl = gross_pnl - total_fees
                 pnl_percent = (net_pnl / (entry_price * quantity)) * 100 if entry_price > 0 else 0.0
-                
+
+                # Calculate hold duration
+                entry_time = position.get('opened_at')
+                exit_time = datetime.now()
+                if entry_time:
+                    hold_duration = int((exit_time - entry_time).total_seconds())
+                else:
+                    hold_duration = 0
+
                 logger.info(
                     f"✅ Position {position_id} closed: "
                     f"entry={entry_price:.2f}, exit={fill_price:.2f}, "
                     f"PnL=${net_pnl:.2f} ({pnl_percent:+.2f}%), "
-                    f"reason={reason}"
+                    f"fees=${total_fees:.2f}, reason={reason}"
                 )
-                
+
+                # Store trade in database
+                if self.database and self.database.is_connected():
+                    trade_record = {
+                        'id': position_id,
+                        'symbol': symbol,
+                        'side': side,
+                        'entry_price': entry_price,
+                        'exit_price': fill_price,
+                        'quantity': filled_qty,
+                        'position_value_usdt': entry_price * quantity,
+                        'stop_loss': position.get('stop_loss'),
+                        'take_profit': position.get('take_profit'),
+                        'trailing_stop': position.get('trailing_stop_percent') is not None,
+                        'pnl': net_pnl,
+                        'pnl_percent': pnl_percent,
+                        'entry_fee': entry_fee,
+                        'exit_fee': exit_fee,
+                        'total_fees': total_fees,
+                        'closure_reason': reason,
+                        'strategy_name': position.get('strategy_name', 'InstitutionalStrategy'),
+                        'entry_time': entry_time or exit_time,
+                        'exit_time': exit_time,
+                        'hold_duration_seconds': hold_duration
+                    }
+
+                    try:
+                        await self.database.store_completed_trade(trade_record)
+                    except Exception as db_error:
+                        logger.error(f"Failed to store trade in database: {db_error}")
+
                 # Remove position from RiskManager
                 self.risk_manager.remove_position(position_id)
                 
