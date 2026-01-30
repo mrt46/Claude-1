@@ -118,7 +118,27 @@ class TradingBot:
             ws_connected_count = 0
             total_streams = len(self.config.trading.symbols) * 3  # 3 streams per symbol
             
+            # Validate symbols before connecting WebSocket streams
+            valid_symbols = []
             for symbol in self.config.trading.symbols:
+                try:
+                    # Quick validation: try to get price for symbol
+                    price = await self.market_data.get_current_price(symbol)
+                    if price is None:
+                        self.logger.warning(f"Skipping {symbol}: Invalid symbol or not available on Binance")
+                        continue
+                    valid_symbols.append(symbol)
+                except Exception as e:
+                    self.logger.warning(f"Skipping {symbol}: Validation failed - {e}")
+                    continue
+            
+            if not valid_symbols:
+                self.logger.warning("No valid symbols found for WebSocket streams")
+                return
+            
+            self.logger.info(f"Validated {len(valid_symbols)}/{len(self.config.trading.symbols)} symbols for WebSocket streams")
+            
+            for symbol in valid_symbols:
                 # Create callbacks with proper closure
                 def create_kline_callback(sym: str):
                     async def callback(data: Dict):
@@ -196,33 +216,58 @@ class TradingBot:
                     self.logger.warning(f"Failed to start WebSocket for {symbol}: {e}")
             
             # Wait a bit for connections to establish (WebSocket connections are async)
-            await asyncio.sleep(3)  # Give WebSocket time to connect
+            await asyncio.sleep(5)  # Give WebSocket more time to connect
             
-            # Check actual connection status
-            ws_connected = self.market_data.ws_manager.is_connected()
-            connected_streams = self.market_data.ws_manager.get_connected_streams()
+            # Check actual connection status multiple times (connections are async)
+            ws_connected = False
+            connected_streams = []
+            for check_attempt in range(3):
+                await asyncio.sleep(2)  # Wait between checks
+                ws_connected = self.market_data.ws_manager.is_connected()
+                connected_streams = self.market_data.ws_manager.get_connected_streams()
+                if ws_connected and len(connected_streams) > 0:
+                    break
             
-            if ws_connected:
-                self.logger.info(f"WebSocket streams active: {len(connected_streams)} streams connected")
+            if ws_connected and len(connected_streams) > 0:
+                self.logger.info(f"✅ WebSocket streams active: {len(connected_streams)} streams connected")
+                self.logger.info(f"Connected streams: {', '.join(connected_streams[:5])}{'...' if len(connected_streams) > 5 else ''}")
+            else:
+                self.logger.warning(f"⚠️ WebSocket streams not connected: {len(connected_streams)}/{total_streams} streams")
+                self.logger.warning("Bot will continue with REST API only (real-time updates may be delayed)")
             
             # Update dashboard based on connection status
             if self.dashboard:
                 db_connected = False
                 try:
-                    if self.timescaledb.pool:
-                        # Quick check
-                        conn = await self.timescaledb.pool.acquire()
-                        await self.timescaledb.pool.release(conn)
-                        db_connected = True
-                except:
+                    if self.timescaledb.pool and self.timescaledb.is_connected():
+                        # Quick check with timeout
+                        try:
+                            conn = await asyncio.wait_for(
+                                self.timescaledb.pool.acquire(),
+                                timeout=2.0
+                            )
+                            await self.timescaledb.pool.release(conn)
+                            db_connected = True
+                        except (asyncio.TimeoutError, Exception) as e:
+                            self.logger.debug(f"Database connection check failed: {e}")
+                            db_connected = False
+                    else:
+                        db_connected = False
+                except Exception as e:
+                    self.logger.debug(f"Database status check error: {e}")
                     db_connected = False
                 
                 # Also check Redis
-                redis_connected = self.redis.client is not None
-                if redis_connected:
+                redis_connected = False
+                if self.redis.client is not None:
                     try:
-                        await self.redis.client.ping()
-                    except:
+                        await asyncio.wait_for(
+                            self.redis.client.ping(),
+                            timeout=2.0
+                        )
+                        redis_connected = True
+                    except (asyncio.TimeoutError, Exception) as e:
+                        self.logger.debug(f"Redis connection check failed: {e}")
                         redis_connected = False
                 
                 # Database is connected if either TimescaleDB or Redis is connected

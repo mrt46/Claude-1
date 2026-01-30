@@ -26,7 +26,8 @@ logger = get_logger(__name__)
 # Binance API endpoints
 BINANCE_REST_URL = "https://api.binance.com"
 BINANCE_TESTNET_REST_URL = "https://testnet.binance.vision"
-BINANCE_WS_URL = "wss://stream.binance.com:9443/ws"
+# Binance WebSocket endpoints (use default port 443, not 9443)
+BINANCE_WS_URL = "wss://stream.binance.com/ws"
 BINANCE_TESTNET_WS_URL = "wss://testnet.binance.vision/ws"
 
 
@@ -239,11 +240,26 @@ class WebSocketManager:
 
     def is_connected(self) -> bool:
         """Check if any WebSocket is connected."""
-        return len(self._running) > 0
+        # Check both running set and actual connections
+        has_running = len(self._running) > 0
+        has_connections = len(self._connections) > 0
+        return has_running or has_connections
 
     def get_connected_streams(self) -> List[str]:
         """Get list of connected stream names."""
-        return list(self._running)
+        # Return streams that are both in _running and have active connections
+        connected = []
+        for stream_name in self._running:
+            if stream_name in self._connections:
+                try:
+                    # Check if connection is still alive
+                    ws = self._connections[stream_name]
+                    if ws and not ws.closed:
+                        connected.append(stream_name)
+                except Exception:
+                    # Connection might be invalid, skip it
+                    pass
+        return connected
 
     async def _connect_stream(
         self,
@@ -264,9 +280,14 @@ class WebSocketManager:
             try:
                 logger.info(f"Connecting to WebSocket stream: {stream_name}")
 
-                async with websockets.connect(url) as ws:
+                async with websockets.connect(
+                    url,
+                    ping_interval=20,  # Send ping every 20 seconds
+                    ping_timeout=10,    # Wait 10 seconds for pong
+                    close_timeout=10    # Wait 10 seconds for close
+                ) as ws:
                     self._connections[stream_name] = ws
-                    logger.info(f"WebSocket connected: {stream_name}")
+                    logger.info(f"✅ WebSocket connected: {stream_name}")
 
                     # Notify callback of connection
                     try:
@@ -291,9 +312,26 @@ class WebSocketManager:
                     await asyncio.sleep(5)
 
             except Exception as e:
-                logger.error(f"WebSocket error: {stream_name} - {e}")
-                if stream_name in self._running:
-                    await asyncio.sleep(5)
+                error_msg = str(e)
+                # Check for HTTP 404 errors (invalid stream)
+                if "404" in error_msg or "HTTP" in error_msg:
+                    logger.warning(f"WebSocket stream not found (404): {stream_name} - This symbol may not exist or be delisted")
+                    # Remove from running set to prevent retry loops
+                    if stream_name in self._running:
+                        self._running.remove(stream_name)
+                    # Clean up
+                    if stream_name in self._connections:
+                        del self._connections[stream_name]
+                    if stream_name in self._tasks:
+                        self._tasks[stream_name].cancel()
+                        del self._tasks[stream_name]
+                    if stream_name in self._callbacks:
+                        del self._callbacks[stream_name]
+                    return  # Exit the connection loop for this stream
+                else:
+                    logger.error(f"WebSocket error: {stream_name} - {e}")
+                    if stream_name in self._running:
+                        await asyncio.sleep(5)
 
         # Cleanup
         if stream_name in self._connections:
