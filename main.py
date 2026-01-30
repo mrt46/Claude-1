@@ -348,7 +348,9 @@ class TradingBot:
             # Initialize dashboard (optional)
             if self.dashboard_enabled:
                 try:
-                    self.dashboard = TerminalDashboard()
+                    self.dashboard = TerminalDashboard(
+                        database=self.timescaledb if db_connected else None
+                    )
                     self.dashboard.start()
                     self.dashboard.update_account_info(usdt_balance, 0.0, 0.0)
                     
