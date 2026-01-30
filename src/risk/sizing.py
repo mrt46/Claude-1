@@ -78,7 +78,11 @@ class PositionSizer:
         
         # Calculate quantity
         quantity = risk_amount_usdt / risk_per_unit
-        
+
+        # Round quantity to 8 decimal places (standard for crypto exchanges)
+        # This prevents rejection by exchange due to precision errors
+        quantity = round(quantity, 8)
+
         # Calculate position value
         position_value_usdt = quantity * entry_price
         
@@ -86,12 +90,14 @@ class PositionSizer:
         if position_value_usdt > self.max_position_size_usdt:
             position_value_usdt = self.max_position_size_usdt
             quantity = position_value_usdt / entry_price
+            quantity = round(quantity, 8)  # Re-round after adjustment
             risk_amount_usdt = quantity * risk_per_unit
         
         # Check minimum position size
         if position_value_usdt < self.min_position_size_usdt:
             # Try to increase to minimum
             min_quantity = self.min_position_size_usdt / entry_price
+            min_quantity = round(min_quantity, 8)  # Round minimum quantity
             if min_quantity * risk_per_unit <= account_balance * (self.risk_per_trade_percent / 100.0):
                 quantity = min_quantity
                 position_value_usdt = quantity * entry_price

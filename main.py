@@ -729,27 +729,51 @@ class TradingBot:
                     order_response['orderId']
                 )
                 
+                # Get executed quantity (works for both FILLED and PARTIALLY_FILLED)
+                executed_qty = float(order_status.get('executedQty', 0))
+                fill_price = float(order_status.get('price', signal.entry_price))
+
                 if order_status['status'] == 'FILLED':
                     self.order_lifecycle.update_order_status(
                         order.id,
                         OrderStatus.FILLED,
-                        filled_quantity=float(order_status.get('executedQty', 0)),
-                        avg_fill_price=float(order_status.get('price', signal.entry_price))
+                        filled_quantity=executed_qty,
+                        avg_fill_price=fill_price
                     )
-                    
-                    # Add position to risk manager
+                    self.logger.info(
+                        f"Order fully filled: {signal.symbol} {signal.side} "
+                        f"{executed_qty} @ {fill_price}"
+                    )
+                elif order_status['status'] == 'PARTIALLY_FILLED' and executed_qty > 0:
+                    self.order_lifecycle.update_order_status(
+                        order.id,
+                        OrderStatus.PARTIALLY_FILLED,
+                        filled_quantity=executed_qty,
+                        avg_fill_price=fill_price
+                    )
+                    self.logger.warning(
+                        f"Order partially filled: {signal.symbol} {signal.side} "
+                        f"{executed_qty} @ {fill_price} (requested: {quantity or 'market'})"
+                    )
+
+                # Add position for executed quantity (FILLED or PARTIALLY_FILLED)
+                if executed_qty > 0:
+                    # Calculate actual position value based on executed quantity
+                    actual_position_value = executed_qty * fill_price
+
                     position_data = {
                         'id': order.id,
                         'symbol': signal.symbol,
                         'side': signal.side,
-                        'entry_price': float(order_status.get('price', signal.entry_price)),
-                        'quantity': float(order_status.get('executedQty', 0)),
-                        'position_value_usdt': position_size['position_value_usdt'],
+                        'entry_price': fill_price,
+                        'quantity': executed_qty,  # Use actual executed quantity
+                        'position_value_usdt': actual_position_value,  # Use actual value
                         'stop_loss': signal.stop_loss,
                         'take_profit': signal.take_profit,
                         'unrealized_pnl': 0.0,
                         'unrealized_pnl_percent': 0.0,
-                        'opened_at': datetime.now()  # Track when position was opened
+                        'opened_at': datetime.now(),
+                        'partial_fill': order_status['status'] == 'PARTIALLY_FILLED'
                     }
                     self.risk_manager.add_position(position_data)
                     
@@ -759,28 +783,36 @@ class TradingBot:
                         for pos in self.risk_manager.open_positions:
                             # Calculate unrealized PnL (simplified)
                             current_price = signal.entry_price  # Would need real-time price
+                            entry_price = pos['entry_price']
+                            quantity = pos['quantity']
+
+                            # Calculate gross PnL
                             if pos['side'] == 'BUY':
-                                pnl = (current_price - pos['entry_price']) * pos['quantity']
+                                gross_pnl = (current_price - entry_price) * quantity
                             else:
-                                pnl = (pos['entry_price'] - current_price) * pos['quantity']
-                            pnl_percent = (pnl / (pos['entry_price'] * pos['quantity'])) * 100
-                            
+                                gross_pnl = (entry_price - current_price) * quantity
+
+                            # Subtract fees (0.1% maker/taker on entry and exit)
+                            entry_fee = entry_price * quantity * 0.001
+                            exit_fee = current_price * quantity * 0.001
+                            net_pnl = gross_pnl - entry_fee - exit_fee
+
+                            pnl_percent = (net_pnl / (entry_price * quantity)) * 100 if (entry_price * quantity) > 0 else 0.0
+
                             positions.append({
                                 **pos,
-                                'unrealized_pnl': pnl,
+                                'unrealized_pnl': net_pnl,
                                 'unrealized_pnl_percent': pnl_percent
                             })
                         self.dashboard.update_positions(positions)
-                    
-                    self.logger.info(
-                        f"Order filled: {signal.symbol} {signal.side} "
-                        f"{order_status.get('executedQty')} @ {order_status.get('price')}"
-                    )
                 else:
-                    self.order_lifecycle.update_order_status(
-                        order.id,
-                        OrderStatus.PARTIALLY_FILLED if float(order_status.get('executedQty', 0)) > 0 else OrderStatus.SUBMITTED
-                    )
+                    # Order not filled or partially filled but no execution
+                    if executed_qty == 0:
+                        self.order_lifecycle.update_order_status(
+                            order.id,
+                            OrderStatus.SUBMITTED
+                        )
+                        self.logger.info(f"Order still pending: {signal.symbol} {signal.side}")
             
             except Exception as e:
                 self.logger.error(f"Error executing order: {e}")
