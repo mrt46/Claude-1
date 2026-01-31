@@ -146,6 +146,24 @@ class TerminalDashboard:
         self.bot_status = status
         self.heartbeat_time = datetime.now()
     
+    def update_trades(self, trades: List[Dict]) -> None:
+        """
+        Update recent trades (called from main thread).
+
+        Args:
+            trades: List of recent trade dicts
+        """
+        self.recent_trades = trades
+
+    def update_daily_stats(self, stats: Dict) -> None:
+        """
+        Update daily statistics (called from main thread).
+
+        Args:
+            stats: Daily statistics dict
+        """
+        self.daily_stats = stats
+
     def update_analysis_result(
         self,
         symbol: str,
@@ -615,38 +633,28 @@ class TerminalDashboard:
         return Panel(table, title="[bold magenta]🎯 Optimization Insights[/bold magenta]", border_style="magenta")
 
     def _fetch_recent_trades(self) -> None:
-        """Fetch recent trades from database (non-blocking)."""
-        if not self.database or not self.database.is_connected():
-            return
+        """
+        Fetch recent trades from database (non-blocking).
 
-        try:
-            # Create event loop for async call
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            self.recent_trades = loop.run_until_complete(
-                self.database.get_recent_trades(limit=10)
-            )
-            loop.close()
-        except Exception as e:
-            logger.debug(f"Failed to fetch trades: {e}")
-            self.recent_trades = []
+        Note: This is called from dashboard thread. Database queries
+        are disabled here due to asyncio event loop conflicts.
+        Use update_trades() method to push data from main thread instead.
+        """
+        # Disabled: event loop conflict with asyncpg
+        # Database updates should be pushed from main thread
+        pass
 
     def _fetch_daily_stats(self) -> None:
-        """Fetch daily stats from database (non-blocking)."""
-        if not self.database or not self.database.is_connected():
-            return
+        """
+        Fetch daily stats from database (non-blocking).
 
-        try:
-            # Create event loop for async call
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            self.daily_stats = loop.run_until_complete(
-                self.database.get_daily_stats()
-            )
-            loop.close()
-        except Exception as e:
-            logger.debug(f"Failed to fetch daily stats: {e}")
-            self.daily_stats = {}
+        Note: This is called from dashboard thread. Database queries
+        are disabled here due to asyncio event loop conflicts.
+        Use update_daily_stats() method to push data from main thread instead.
+        """
+        # Disabled: event loop conflict with asyncpg
+        # Database updates should be pushed from main thread
+        pass
 
     def _generate_layout(self) -> Layout:
         """Generate dashboard layout."""

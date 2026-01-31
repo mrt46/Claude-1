@@ -552,6 +552,17 @@ class TradingBot:
                         portfolio_update_counter = 0
                     except Exception as e:
                         self.logger.warning(f"Failed to update portfolio: {e}")
+
+                    # Update trade history and daily stats from database
+                    if self.dashboard and self.timescaledb and self.timescaledb.is_connected():
+                        try:
+                            trades = await self.timescaledb.get_recent_trades(limit=10)
+                            self.dashboard.update_trades(trades)
+
+                            stats = await self.timescaledb.get_daily_stats()
+                            self.dashboard.update_daily_stats(stats)
+                        except Exception as e:
+                            self.logger.debug(f"Failed to update dashboard data: {e}")
                 
                 # Main trading loop
                 for symbol in self.config.trading.symbols:
