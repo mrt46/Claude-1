@@ -22,6 +22,12 @@ from src.data.database import TimescaleDBClient
 
 logger = get_logger(__name__)
 
+# Forward declaration for type hints
+try:
+    from src.optimization.agent import OptimizationAgent
+except ImportError:
+    OptimizationAgent = None
+
 
 class TerminalDashboard:
     """
@@ -37,17 +43,23 @@ class TerminalDashboard:
     Non-intrusive: Can be started/stopped independently.
     """
     
-    def __init__(self, database: Optional[TimescaleDBClient] = None):
+    def __init__(
+        self,
+        database: Optional[TimescaleDBClient] = None,
+        optimization_agent: Optional['OptimizationAgent'] = None
+    ):
         """
         Initialize terminal dashboard.
 
         Args:
             database: Optional TimescaleDBClient for trade history
+            optimization_agent: Optional OptimizationAgent for recommendations
         """
         self.console = Console()
         self.running = False
         self.thread: Optional[threading.Thread] = None
         self.database = database
+        self.optimization_agent = optimization_agent
 
         # State data (updated by bot)
         self.account_balance: float = 0.0
@@ -539,6 +551,69 @@ class TerminalDashboard:
 
         return Panel(table, title="[bold yellow]📈 Today's Stats[/bold yellow]", border_style="yellow")
 
+    def _create_optimization_panel(self) -> Panel:
+        """Create optimization recommendations panel."""
+        if not self.optimization_agent:
+            return Panel(
+                Text("Optimization agent not enabled", justify="center", style="dim"),
+                title="[bold magenta]🎯 Optimization Insights[/bold magenta]",
+                border_style="magenta"
+            )
+
+        table = Table.grid(padding=(0, 1))
+        table.add_column(style="cyan", justify="left")
+
+        # Get latest recommendations
+        recommendations = self.optimization_agent.get_latest_recommendations(max_count=3)
+        summary = self.optimization_agent.get_analysis_summary()
+
+        if not recommendations and not summary:
+            table.add_row("[dim]Waiting for trade data...[/dim]")
+            table.add_row("[dim]Analysis runs every 24h[/dim]")
+        else:
+            # Show analysis summary
+            if summary:
+                last_analysis = summary.get('timestamp')
+                if last_analysis and isinstance(last_analysis, datetime):
+                    time_diff = (datetime.now() - last_analysis).total_seconds()
+                    if time_diff < 3600:
+                        time_str = f"{int(time_diff / 60)}m ago"
+                    else:
+                        time_str = f"{int(time_diff / 3600)}h ago"
+                else:
+                    time_str = "Unknown"
+
+                table.add_row(f"[bold]Last Analysis:[/bold] {time_str}")
+                table.add_row(f"Trades: {summary.get('total_trades', 0)} | Win Rate: {summary.get('win_rate', 0):.1f}%")
+                table.add_row(f"PnL: ${summary.get('total_pnl', 0):.2f} | Issues: {summary.get('issues_count', 0)}")
+                table.add_row("")
+
+            # Show top recommendations
+            if recommendations:
+                priority_emoji = {
+                    'critical': '🔴',
+                    'high': '🟠',
+                    'medium': '🟡',
+                    'low': '🟢'
+                }
+
+                table.add_row("[bold]Top Recommendations:[/bold]")
+                for i, rec in enumerate(recommendations[:3], 1):
+                    emoji = priority_emoji.get(rec['priority'], '⚪')
+                    title = rec['title'][:35]  # Truncate long titles
+                    table.add_row(f"{i}. {emoji} {title}")
+
+                # Next analysis time
+                next_time = self.optimization_agent.get_time_until_next_analysis()
+                if next_time:
+                    hours_left = int(next_time.total_seconds() / 3600)
+                    table.add_row("")
+                    table.add_row(f"[dim]Next analysis in {hours_left}h[/dim]")
+            else:
+                table.add_row("[green]✓ No issues found[/green]")
+
+        return Panel(table, title="[bold magenta]🎯 Optimization Insights[/bold magenta]", border_style="magenta")
+
     def _fetch_recent_trades(self) -> None:
         """Fetch recent trades from database (non-blocking)."""
         if not self.database or not self.database.is_connected():
@@ -596,6 +671,7 @@ class TerminalDashboard:
 
         layout["right"].split_column(
             Layout(name="trades"),
+            Layout(name="optimization"),
             Layout(name="positions"),
             Layout(name="system")
         )
@@ -609,6 +685,7 @@ class TerminalDashboard:
         layout["wallet"].update(self._create_wallet_panel())
         layout["daily_stats"].update(self._create_daily_stats_panel())
         layout["trades"].update(self._create_trade_history_panel())
+        layout["optimization"].update(self._create_optimization_panel())
         layout["positions"].update(self._create_positions_panel())
         layout["system"].update(self._create_system_panel())
 
