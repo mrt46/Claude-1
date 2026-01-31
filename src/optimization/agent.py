@@ -84,6 +84,10 @@ class OptimizationAgent:
 
     def _run_loop(self) -> None:
         """Main agent loop (runs in background thread)."""
+        # Wait 5 minutes before first check to avoid startup conflicts
+        self.logger.info("Optimization agent waiting 5 minutes before first analysis check...")
+        threading.Event().wait(300)  # 5 minutes
+
         while self.running:
             try:
                 # Check if it's time for analysis
@@ -101,7 +105,11 @@ class OptimizationAgent:
 
                 if should_analyze:
                     self.logger.info("Starting scheduled optimization analysis...")
-                    asyncio.run(self.run_analysis())
+                    try:
+                        asyncio.run(self.run_analysis())
+                    except Exception as analysis_error:
+                        self.logger.error(f"Analysis failed: {analysis_error}")
+                        # Continue running, will try again later
 
                 # Sleep for 1 hour before checking again
                 threading.Event().wait(3600)
