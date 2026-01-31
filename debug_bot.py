@@ -9,14 +9,39 @@ Run this to check:
 """
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
-from src.core.config import Config
-from src.core.exchange import BinanceExchange
-from src.data.database import RedisClient, TimescaleDBClient
-from src.data.market_data import MarketDataManager
-from src.strategies.institutional import InstitutionalStrategy
+# Check if .env exists
+env_file = Path(".env")
+if not env_file.exists():
+    print("⚠️  .env file not found!")
+    print("Creating a template .env file...")
+    template = """# Exchange API
+BINANCE_API_KEY=your_api_key_here
+BINANCE_API_SECRET=your_api_secret_here
+TESTNET=true
+
+# Trading Configuration
+TRADING_SYMBOLS=BTCUSDT,ETHUSDT,BNBUSDT
+
+# Database Configuration
+TIMESCALEDB_HOST=localhost
+TIMESCALEDB_PORT=5432
+TIMESCALEDB_DATABASE=trading_bot
+TIMESCALEDB_USER=postgres
+TIMESCALEDB_PASSWORD=postgres
+
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=
+REDIS_DB=0
+"""
+    with open(".env", "w") as f:
+        f.write(template)
+    print("✅ Created .env template. Please update it with your actual values.")
+    print("")
 
 
 async def test_database_connection():
@@ -25,49 +50,88 @@ async def test_database_connection():
     print("1. TESTING DATABASE CONNECTIONS")
     print("="*60)
 
-    config = Config()
-
     # Test TimescaleDB
     print("\n[TimescaleDB]")
     try:
+        from src.data.database import TimescaleDBClient
+
+        host = os.getenv("TIMESCALEDB_HOST", "localhost")
+        port = int(os.getenv("TIMESCALEDB_PORT", "5432"))
+        database = os.getenv("TIMESCALEDB_DATABASE", "trading_bot")
+        user = os.getenv("TIMESCALEDB_USER", "postgres")
+        password = os.getenv("TIMESCALEDB_PASSWORD", "postgres")
+
+        print(f"Connection details:")
+        print(f"  Host: {host}:{port}")
+        print(f"  Database: {database}")
+        print(f"  User: {user}")
+        print(f"  Password: {'*' * len(password) if password else '(empty)'}")
+
         db = TimescaleDBClient(
-            host=config.database.timescaledb_host,
-            port=config.database.timescaledb_port,
-            database=config.database.timescaledb_database,
-            user=config.database.timescaledb_user,
-            password=config.database.timescaledb_password
+            host=host,
+            port=port,
+            database=database,
+            user=user,
+            password=password
         )
         connected = await db.connect()
         if connected:
-            print(f"✅ Connected to TimescaleDB at {config.database.timescaledb_host}:{config.database.timescaledb_port}")
+            print(f"✅ Connected to TimescaleDB successfully!")
+
+            # Test schema
+            try:
+                schema_ok = await db.initialize_schema()
+                if schema_ok:
+                    print("✅ Database schema is ready")
+                else:
+                    print("⚠️  Schema initialization had issues (but connection works)")
+            except Exception as e:
+                print(f"⚠️  Schema check failed: {e}")
+
             await db.close()
         else:
             print(f"❌ Failed to connect to TimescaleDB")
-            print(f"   Host: {config.database.timescaledb_host}")
-            print(f"   Port: {config.database.timescaledb_port}")
-            print(f"   Database: {config.database.timescaledb_database}")
-            print(f"   User: {config.database.timescaledb_user}")
-            print(f"   Password: {'*' * len(config.database.timescaledb_password)}")
+            print("\n💡 Troubleshooting:")
+            print("  1. Check if Docker container is running:")
+            print("     docker ps | grep timescaledb")
+            print("  2. Check password in .env file")
+            print("  3. Try resetting password:")
+            print("     docker exec -it timescaledb psql -U postgres")
+            print("     ALTER USER postgres PASSWORD 'your_password';")
+            return False
     except Exception as e:
-        print(f"❌ TimescaleDB error: {e}")
+        print(f"❌ TimescaleDB test error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
     # Test Redis
     print("\n[Redis]")
     try:
+        from src.data.database import RedisClient
+
+        host = os.getenv("REDIS_HOST", "localhost")
+        port = int(os.getenv("REDIS_PORT", "6379"))
+        password = os.getenv("REDIS_PASSWORD", "")
+        db = int(os.getenv("REDIS_DB", "0"))
+
         redis = RedisClient(
-            host=config.database.redis_host,
-            port=config.database.redis_port,
-            password=config.database.redis_password,
-            db=config.database.redis_db
+            host=host,
+            port=port,
+            password=password if password else None,
+            db=db
         )
         connected = await redis.connect()
         if connected:
-            print(f"✅ Connected to Redis at {config.database.redis_host}:{config.database.redis_port}")
+            print(f"✅ Connected to Redis at {host}:{port}")
             await redis.close()
+            return True
         else:
             print(f"❌ Failed to connect to Redis")
+            return False
     except Exception as e:
         print(f"❌ Redis error: {e}")
+        return False
 
 
 async def test_exchange_connection():
@@ -76,15 +140,27 @@ async def test_exchange_connection():
     print("2. TESTING EXCHANGE CONNECTION")
     print("="*60)
 
-    config = Config()
+    api_key = os.getenv("BINANCE_API_KEY", "")
+    api_secret = os.getenv("BINANCE_API_SECRET", "")
+    testnet = os.getenv("TESTNET", "true").lower() == "true"
 
-    print(f"\n[Testnet: {config.exchange.testnet}]")
+    if not api_key or not api_secret or "your_api" in api_key.lower():
+        print("❌ Binance API keys not configured in .env")
+        print("\n💡 To test exchange connection:")
+        print("  1. Get API keys from Binance")
+        print("  2. Update .env file with your keys")
+        print("  3. Run this script again")
+        return []
+
+    print(f"\n[Testnet: {testnet}]")
 
     try:
+        from src.core.exchange import BinanceExchange
+
         exchange = BinanceExchange(
-            api_key=config.exchange.api_key,
-            api_secret=config.exchange.api_secret,
-            testnet=config.exchange.testnet
+            api_key=api_key,
+            api_secret=api_secret,
+            testnet=testnet
         )
 
         async with exchange:
@@ -95,13 +171,17 @@ async def test_exchange_connection():
                 print(f"✅ USDT Balance: {balance:.2f}")
             except Exception as e:
                 print(f"❌ Failed to get balance: {e}")
+                return []
 
             # Test symbols
-            print(f"\n[Testing Symbols: {', '.join(config.trading.symbols)}]")
+            symbols_str = os.getenv("TRADING_SYMBOLS", "BTCUSDT,ETHUSDT,BNBUSDT")
+            symbols = [s.strip() for s in symbols_str.split(",")]
+
+            print(f"\n[Testing Symbols: {', '.join(symbols)}]")
             valid_symbols = []
             invalid_symbols = []
 
-            for symbol in config.trading.symbols:
+            for symbol in symbols:
                 try:
                     price = await exchange.get_current_price(symbol)
                     if price:
@@ -111,134 +191,97 @@ async def test_exchange_connection():
                         print(f"❌ {symbol}: No price returned")
                         invalid_symbols.append(symbol)
                 except Exception as e:
-                    print(f"❌ {symbol}: {e}")
+                    print(f"❌ {symbol}: {str(e)[:50]}")
                     invalid_symbols.append(symbol)
 
             print(f"\nSummary: {len(valid_symbols)} valid, {len(invalid_symbols)} invalid")
 
             if invalid_symbols:
-                print(f"⚠️  Invalid symbols: {', '.join(invalid_symbols)}")
-                print("   Consider removing these from .env TRADING_SYMBOLS")
+                print(f"\n⚠️  Invalid symbols on {'testnet' if testnet else 'mainnet'}: {', '.join(invalid_symbols)}")
+                print("💡 Update TRADING_SYMBOLS in .env to remove invalid symbols")
 
             return valid_symbols
 
     except Exception as e:
         print(f"❌ Exchange connection failed: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 
-async def test_signal_generation(valid_symbols):
-    """Test if strategy can generate signals."""
+async def check_environment():
+    """Check environment configuration."""
     print("\n" + "="*60)
-    print("3. TESTING SIGNAL GENERATION")
+    print("3. CHECKING ENVIRONMENT CONFIGURATION")
     print("="*60)
 
-    if not valid_symbols:
-        print("❌ No valid symbols to test")
-        return
+    required_vars = [
+        "BINANCE_API_KEY",
+        "BINANCE_API_SECRET",
+        "TIMESCALEDB_HOST",
+        "TIMESCALEDB_PASSWORD",
+        "TRADING_SYMBOLS"
+    ]
 
-    config = Config()
+    missing = []
+    configured = []
 
-    try:
-        # Initialize components
-        market_data = MarketDataManager(testnet=config.exchange.testnet)
-        strategy = InstitutionalStrategy({
-            'min_score': config.strategy.min_score,
-            'min_buy_score': config.strategy.min_buy_score,
-            'min_sell_score': config.strategy.min_sell_score,
-            'weights': config.strategy.weights
-        })
-        strategy.set_market_data_manager(market_data)
+    for var in required_vars:
+        value = os.getenv(var, "")
+        if not value or "your_" in value.lower():
+            missing.append(var)
+            print(f"❌ {var}: Not configured")
+        else:
+            configured.append(var)
+            if "SECRET" in var or "PASSWORD" in var:
+                print(f"✅ {var}: {'*' * 10}")
+            else:
+                display_value = value if len(value) < 50 else value[:47] + "..."
+                print(f"✅ {var}: {display_value}")
 
-        exchange = BinanceExchange(
-            api_key=config.exchange.api_key,
-            api_secret=config.exchange.api_secret,
-            testnet=config.exchange.testnet
-        )
+    print(f"\nSummary: {len(configured)}/{len(required_vars)} required variables configured")
 
-        async with exchange:
-            # Test first valid symbol
-            test_symbol = valid_symbols[0]
-            print(f"\n[Testing {test_symbol}]")
+    if missing:
+        print(f"\n⚠️  Missing configuration:")
+        for var in missing:
+            print(f"  - {var}")
+        print("\n💡 Update .env file with these values")
+        return False
 
-            # Get OHLCV data
-            print("Fetching OHLCV data...")
-            try:
-                df = await market_data.get_ohlcv_data(test_symbol, interval="1m", limit=200)
-
-                if df.empty:
-                    print(f"❌ No OHLCV data returned for {test_symbol}")
-                    return
-
-                print(f"✅ Got {len(df)} candles")
-                print(f"   Latest price: ${df['close'].iloc[-1]:,.2f}")
-                print(f"   Time range: {df.index[0]} to {df.index[-1]}")
-
-                # Try to generate signal
-                print("\nGenerating signal...")
-                signal = await strategy.generate_signal(df)
-
-                if signal:
-                    print(f"✅ SIGNAL GENERATED!")
-                    print(f"   Side: {signal.side}")
-                    print(f"   Entry: ${signal.entry_price:,.2f}")
-                    print(f"   Stop Loss: ${signal.stop_loss:,.2f}")
-                    print(f"   Take Profit: ${signal.take_profit:,.2f}")
-                    print(f"   Confidence: {signal.confidence:.2%}")
-                else:
-                    print(f"⚠️  No signal generated (scores below threshold)")
-                    print(f"   This is NORMAL - strategy is selective")
-                    print(f"   Min score required: {config.strategy.min_score}")
-
-                    # Check last scores from strategy
-                    if hasattr(strategy, '_last_buy_score'):
-                        print(f"   Last BUY score: {strategy._last_buy_score:.1f}/{strategy._last_max_score:.1f}")
-                        print(f"   Last SELL score: {strategy._last_sell_score:.1f}/{strategy._last_max_score:.1f}")
-
-            except Exception as e:
-                print(f"❌ Signal generation failed: {e}")
-                import traceback
-                traceback.print_exc()
-
-    except Exception as e:
-        print(f"❌ Test failed: {e}")
-        import traceback
-        traceback.print_exc()
+    return True
 
 
-async def test_main_loop_entry():
-    """Test if main loop can start."""
+async def test_strategy_config():
+    """Test strategy configuration."""
     print("\n" + "="*60)
-    print("4. TESTING MAIN LOOP ENTRY")
+    print("4. CHECKING STRATEGY CONFIGURATION")
     print("="*60)
 
-    print("\n[Checking bot.run() method]")
-
     try:
-        from main import TradingBot
+        min_score = float(os.getenv("MIN_SCORE", "7.0"))
+        print(f"\n[Strategy Settings]")
+        print(f"Min Score Threshold: {min_score}/10.0")
 
-        bot = TradingBot()
-
-        # Check if bot has run method
-        if hasattr(bot, 'run'):
-            print("✅ bot.run() method exists")
+        if min_score >= 8.0:
+            print("⚠️  Very strict threshold - trades will be rare")
+            print("   Consider lowering to 6.5-7.5 for more opportunities")
+        elif min_score <= 5.0:
+            print("⚠️  Very loose threshold - may result in poor quality trades")
+            print("   Consider raising to 6.5-7.5 for better quality")
         else:
-            print("❌ bot.run() method not found")
+            print("✅ Threshold is in recommended range (6.5-7.5)")
 
-        # Check if bot has initialize method
-        if hasattr(bot, 'initialize'):
-            print("✅ bot.initialize() method exists")
-        else:
-            print("❌ bot.initialize() method not found")
+        print(f"\n💡 Understanding Min Score:")
+        print(f"  - Score is calculated from 5 factors (Volume Profile, Order Book, CVD, S/D zones, HVN)")
+        print(f"  - Each factor contributes points (max 10 total)")
+        print(f"  - Higher threshold = fewer but higher quality trades")
+        print(f"  - Current: Requires {min_score}/10 factors to align")
 
-        print("\n[Recommendation]")
-        print("Run bot with verbose logging to see if main loop starts:")
-        print("  python main.py")
-        print("\nLook for this log message:")
-        print("  'Trading bot STARTED - Entering main loop'")
+        return True
 
     except Exception as e:
-        print(f"❌ Import failed: {e}")
+        print(f"❌ Strategy config error: {e}")
+        return False
 
 
 async def main():
@@ -248,36 +291,85 @@ async def main():
     print("="*60)
     print("This will test why your bot is not trading.\n")
 
+    results = {
+        "environment": False,
+        "database": False,
+        "exchange": False,
+        "strategy": False
+    }
+
     try:
-        # Test 1: Database
-        await test_database_connection()
+        # Test 1: Environment
+        results["environment"] = await check_environment()
 
-        # Test 2: Exchange & Symbols
-        valid_symbols = await test_exchange_connection()
+        # Test 2: Database (always test, doesn't need API keys)
+        results["database"] = await test_database_connection()
 
-        # Test 3: Signal Generation
-        if valid_symbols:
-            await test_signal_generation(valid_symbols)
+        # Test 3: Strategy Config
+        results["strategy"] = await test_strategy_config()
+
+        # Test 4: Exchange & Symbols (only if API keys configured)
+        if results["environment"]:
+            valid_symbols = await test_exchange_connection()
+            results["exchange"] = len(valid_symbols) > 0
         else:
-            print("\n❌ Skipping signal generation test (no valid symbols)")
-
-        # Test 4: Main Loop
-        await test_main_loop_entry()
+            print("\n⏭️  Skipping exchange test (API keys not configured)")
 
         # Summary
         print("\n" + "="*60)
-        print("DIAGNOSTIC COMPLETE")
+        print("DIAGNOSTIC SUMMARY")
         print("="*60)
-        print("\n[Next Steps]")
-        print("1. Fix any ❌ errors shown above")
-        print("2. If database password is wrong, update .env file")
-        print("3. If symbols are invalid on testnet, update TRADING_SYMBOLS in .env")
-        print("4. Run bot again: python main.py")
-        print("5. Check logs for 'Trading bot STARTED - Entering main loop'")
-        print("\n[Understanding Results]")
-        print("- No signal generated = NORMAL (strategy is selective)")
-        print("- Wait for market conditions to meet min_score threshold")
-        print("- Bot needs to see 7/10 score to trade (very conservative)")
+
+        passed = sum(1 for v in results.values() if v)
+        total = len(results)
+
+        status_emoji = "✅" if passed == total else "⚠️" if passed > 0 else "❌"
+        print(f"\n{status_emoji} {passed}/{total} checks passed")
+
+        for test, passed in results.items():
+            emoji = "✅" if passed else "❌"
+            print(f"  {emoji} {test.capitalize()}")
+
+        # Next steps
+        print("\n" + "="*60)
+        print("NEXT STEPS")
+        print("="*60)
+
+        if not results["database"]:
+            print("\n🔧 DATABASE ISSUES DETECTED")
+            print("  Fix steps:")
+            print("  1. Start Docker containers:")
+            print("     docker-compose up -d")
+            print("  2. Wait 5 seconds for database to initialize")
+            print("  3. Check .env file has correct password")
+            print("  4. Run this script again")
+
+        elif not results["environment"]:
+            print("\n🔧 CONFIGURATION INCOMPLETE")
+            print("  Update .env file with:")
+            print("  - Binance API keys")
+            print("  - Trading symbols")
+            print("  Then run this script again")
+
+        elif not results["exchange"]:
+            print("\n🔧 EXCHANGE CONNECTION ISSUES")
+            print("  Check:")
+            print("  - API keys are correct")
+            print("  - Symbols are valid on testnet/mainnet")
+            print("  - Network connection is working")
+
+        else:
+            print("\n✅ ALL SYSTEMS READY!")
+            print("\n🚀 Your bot should be working. Run:")
+            print("     python main.py")
+            print("\n📊 The dashboard will appear in full-screen mode")
+            print("   - Log messages will be hidden by dashboard")
+            print("   - This is normal - dashboard shows all info")
+            print("\n💡 Understanding 'No Trades':")
+            print("   - Strategy is very selective (min score 7/10)")
+            print("   - May take hours/days to find good opportunities")
+            print("   - Dashboard shows analysis scores in real-time")
+            print("   - Check 'Bot Activity' panel for last analysis results")
 
     except KeyboardInterrupt:
         print("\n\nDiagnostic cancelled by user")
@@ -288,6 +380,13 @@ async def main():
 
 
 if __name__ == "__main__":
+    # Load .env file
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        print("⚠️  python-dotenv not installed, using system environment variables")
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
