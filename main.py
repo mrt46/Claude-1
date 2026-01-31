@@ -19,6 +19,7 @@ from src.data.database import RedisClient, TimescaleDBClient
 from src.data.market_data import MarketDataManager
 from src.execution.lifecycle import OrderLifecycleManager, OrderStatus
 from src.execution.router import SmartOrderRouter
+from src.optimization.agent import OptimizationAgent
 from src.risk.manager import RiskManager
 from src.strategies.institutional import InstitutionalStrategy
 
@@ -96,6 +97,10 @@ class TradingBot:
         # Initialize dashboard (optional, non-intrusive)
         self.dashboard: Optional[TerminalDashboard] = None
         self.dashboard_enabled = True  # Can be disabled via config
+
+        # Optimization agent for parameter tuning (initialized in initialize())
+        self.optimization_agent: Optional[OptimizationAgent] = None
+        self.optimization_enabled = True  # Can be disabled via config
 
         # Position monitor for SL/TP enforcement (initialized in initialize())
         self.position_monitor: Optional[PositionMonitor] = None
@@ -345,22 +350,39 @@ class TradingBot:
                 usdt_balance = 10000.0  # Fallback
                 self.risk_manager.set_daily_start_balance(usdt_balance)
             
+            # Initialize optimization agent (optional, requires database)
+            if self.optimization_enabled and db_connected:
+                try:
+                    self.optimization_agent = OptimizationAgent(
+                        database=self.timescaledb,
+                        analysis_interval_hours=24,  # Run analysis every 24 hours
+                        min_trades_for_analysis=10   # Require at least 10 trades
+                    )
+                    self.optimization_agent.start()
+                    self.logger.info("✅ Optimization agent started (analysis every 24h)")
+                except Exception as e:
+                    self.logger.warning(f"Failed to start optimization agent: {e}")
+                    self.optimization_agent = None
+            elif self.optimization_enabled and not db_connected:
+                self.logger.info("ℹ️  Optimization agent disabled (requires database)")
+
             # Initialize dashboard (optional)
             if self.dashboard_enabled:
                 try:
                     self.dashboard = TerminalDashboard(
-                        database=self.timescaledb if db_connected else None
+                        database=self.timescaledb if db_connected else None,
+                        optimization_agent=self.optimization_agent
                     )
                     self.dashboard.start()
                     self.dashboard.update_account_info(usdt_balance, 0.0, 0.0)
-                    
+
                     # Initial portfolio update
                     try:
                         portfolio = await self.exchange.get_portfolio_summary()
                         self.dashboard.update_wallet_info(portfolio)
                     except Exception as e:
                         self.logger.warning(f"Failed to get initial portfolio: {e}")
-                    
+
                     self.dashboard.update_system_status({
                         'websocket_connected': False,
                         'database_connected': True
@@ -426,6 +448,14 @@ class TradingBot:
                 self.logger.info("Position monitor stopped")
             except Exception as e:
                 self.logger.error(f"Error stopping position monitor: {e}")
+
+        # Stop optimization agent
+        if self.optimization_agent:
+            try:
+                self.optimization_agent.stop()
+                self.logger.info("Optimization agent stopped")
+            except Exception as e:
+                self.logger.error(f"Error stopping optimization agent: {e}")
 
         # Stop dashboard
         if self.dashboard:
