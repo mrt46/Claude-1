@@ -366,7 +366,17 @@ class TradingBot:
             elif self.optimization_enabled and not db_connected:
                 self.logger.info("ℹ️  Optimization agent disabled (requires database)")
 
-            # Initialize dashboard (optional)
+            # Start WebSocket connections BEFORE dashboard (so logs are visible)
+            self.logger.info("Starting WebSocket streams...")
+            try:
+                await asyncio.wait_for(self._start_websocket_streams(), timeout=30.0)
+                self.logger.info("✅ WebSocket streams initialization complete")
+            except asyncio.TimeoutError:
+                self.logger.warning("⚠️  WebSocket initialization timed out (continuing with REST API only)")
+            except Exception as e:
+                self.logger.warning(f"⚠️  WebSocket initialization error: {e} (continuing with REST API only)")
+
+            # Initialize dashboard AFTER WebSocket (so WebSocket logs are visible)
             if self.dashboard_enabled:
                 try:
                     self.dashboard = TerminalDashboard(
@@ -384,23 +394,14 @@ class TradingBot:
                         self.logger.warning(f"Failed to get initial portfolio: {e}")
 
                     self.dashboard.update_system_status({
-                        'websocket_connected': False,
-                        'database_connected': True
+                        'websocket_connected': True,
+                        'database_connected': db_connected
                     })
-                    self.logger.info("Terminal dashboard enabled")
+                    self.logger.info("✅ Terminal dashboard started (full-screen mode)")
+                    self.logger.info("   Note: Further logs will be hidden by dashboard")
                 except Exception as e:
                     self.logger.warning(f"Failed to start dashboard: {e}")
                     self.dashboard = None
-            
-            # Start WebSocket connections for real-time data (with timeout protection)
-            self.logger.info("Starting WebSocket streams...")
-            try:
-                await asyncio.wait_for(self._start_websocket_streams(), timeout=30.0)
-                self.logger.info("WebSocket streams initialization complete")
-            except asyncio.TimeoutError:
-                self.logger.warning("WebSocket initialization timed out (continuing with REST API only)")
-            except Exception as e:
-                self.logger.warning(f"WebSocket initialization error: {e} (continuing with REST API only)")
 
             # Initialize and start position monitor for SL/TP enforcement
             self.position_monitor = PositionMonitor(
